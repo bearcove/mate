@@ -388,7 +388,7 @@ async fn maybe_notify_idle(
         if let Some(source_pane) = pending.source_pane.as_deref() {
             match tmux::capture_pane(source_pane) {
                 Ok(pane_capture) => {
-                    message.push_str(&format!("\n||{pane_capture}||"));
+                    message.push_str(&format!("\n```\n{pane_capture}\n```"));
                 }
                 Err(e) => {
                     warn!(
