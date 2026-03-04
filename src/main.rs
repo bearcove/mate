@@ -361,13 +361,13 @@ async fn client_assign(
 fn print_request_followup_help(request_id: &str) {
     eprintln!();
     eprintln!("What's next:");
+    eprintln!("  Your buddy is working now. You have nothing to do on this task until they reply.");
+    eprintln!("  Their response will arrive through user input automatically.");
+    eprintln!("  Use this free time to plan your next move.");
+    eprintln!();
     eprintln!(
         "  bud spy {request_id}                         - peek at what your buddy's pane looks like right now"
     );
-    eprintln!(
-        "  bud wait {request_id}                        - stream buddy updates and final response (90s default)"
-    );
-    eprintln!("  bud wait {request_id} --timeout 300          - block with custom timeout");
     eprintln!(
         "  bud list                                 - see all in-flight requests and their status"
     );
