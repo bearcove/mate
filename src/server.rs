@@ -787,16 +787,26 @@ async fn process_response_files(
             let message = format!(
                 "{intro}\n{body}\n\nRemember: you're the captain. If there's follow-up work, assign it to your buddy — don't do it yourself. Stay focused on the big picture!\n\nThis is also a good time to commit and push your buddy's work so far.{git_section}"
             );
-            let final_path = session_path.join(format!("{request_id}.final.md"));
-            if let Err(e) = std::fs::write(&final_path, &message) {
+            let waiter_marker = session_path.join(format!("{request_id}.waiter"));
+            if waiter_marker.exists() {
+                let final_path = session_path.join(format!("{request_id}.final.md"));
+                if let Err(e) = std::fs::write(&final_path, &message) {
+                    error!(
+                        "failed to write final wait response for request {} in session {} to {}: {e}",
+                        request_id,
+                        session_name,
+                        final_path.display()
+                    );
+                    continue;
+                }
+            } else if let Err(e) = tmux::send_to_pane(&source_pane, &message) {
                 error!(
-                    "failed to write final wait response for request {} in session {} to {}: {e}",
-                    request_id,
-                    session_name,
-                    final_path.display()
+                    "failed to deliver response to pane {} for request {}: {e}",
+                    source_pane, request_id
                 );
                 continue;
             }
+            let _ = std::fs::remove_file(&waiter_marker);
 
             if let Err(e) = std::fs::remove_dir_all(&request_path)
                 && e.kind() != std::io::ErrorKind::NotFound
