@@ -101,6 +101,7 @@ pub struct IssueSyncResult {
 pub struct ParsedIssueFile {
     pub number: u64,
     pub title: String,
+    pub state: String,
     pub labels: Vec<String>,
     pub milestone: Option<String>,
     pub assignees: Vec<String>,
@@ -110,6 +111,7 @@ pub struct ParsedIssueFile {
 #[derive(Debug, Clone, Default)]
 struct IssueFieldDiff {
     title: Option<String>,
+    state: Option<String>,
     body: Option<String>,
     milestone: Option<Option<String>>,
     added_labels: Vec<String>,
@@ -181,6 +183,7 @@ pub fn parse_issue_file(content: &str) -> Result<ParsedIssueFile> {
     let title = title_raw.trim().to_string();
 
     let mut labels = Vec::new();
+    let mut state = "open".to_string();
     let mut milestone = None;
     let mut assignees = Vec::new();
 
@@ -195,6 +198,17 @@ pub fn parse_issue_file(content: &str) -> Result<ParsedIssueFile> {
         if let Some(value) = line.strip_prefix("**Labels:**") {
             labels = split_csv(value);
             continue;
+        }
+        if let Some(value) = line.strip_prefix("**State:**") {
+            let parsed = value.trim().to_ascii_lowercase();
+            match parsed.as_str() {
+                "open" | "closed" => state = parsed,
+                other => {
+                    return Err(eyre::eyre!(
+                        "invalid issue state '{other}' (expected 'open' or 'closed')"
+                    ));
+                }
+            }
         }
         if let Some(value) = line.strip_prefix("**Milestone:**") {
             let value = value.trim();
@@ -225,6 +239,7 @@ pub fn parse_issue_file(content: &str) -> Result<ParsedIssueFile> {
     Ok(ParsedIssueFile {
         number,
         title,
+        state,
         labels,
         milestone,
         assignees,
@@ -759,6 +774,9 @@ fn diff_issue_fields(old: &ParsedIssueFile, new: &ParsedIssueFile) -> IssueField
     if old.title != new.title {
         diff.title = Some(new.title.clone());
     }
+    if old.state != new.state {
+        diff.state = Some(new.state.clone());
+    }
     if old.body != new.body {
         diff.body = Some(new.body.clone());
     }
@@ -791,6 +809,7 @@ fn diff_issue_fields(old: &ParsedIssueFile, new: &ParsedIssueFile) -> IssueField
 impl IssueFieldDiff {
     fn is_empty(&self) -> bool {
         self.title.is_none()
+            && self.state.is_none()
             && self.body.is_none()
             && self.milestone.is_none()
             && self.added_labels.is_empty()
@@ -803,6 +822,9 @@ impl IssueFieldDiff {
         let mut changes = Vec::new();
         if self.title.is_some() {
             changes.push("changed title".to_string());
+        }
+        if let Some(state) = self.state.as_deref() {
+            changes.push(format!("state -> {state}"));
         }
         if self.body.is_some() {
             changes.push("updated body".to_string());
@@ -868,6 +890,35 @@ fn apply_issue_edits(repo: &str, edited: &ParsedIssueFile, diff: &IssueFieldDiff
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(eyre::eyre!("gh issue edit failed: {stderr}"));
+    }
+
+    if let Some(state) = diff.state.as_deref() {
+        let mut state_cmd = Command::new("gh");
+        match state {
+            "closed" => {
+                state_cmd.args(["issue", "close", "-R", repo, &edited.number.to_string()]);
+            }
+            "open" => {
+                state_cmd.args(["issue", "reopen", "-R", repo, &edited.number.to_string()]);
+            }
+            other => {
+                return Err(eyre::eyre!(
+                    "invalid desired state '{other}' for issue #{}",
+                    edited.number
+                ));
+            }
+        }
+        let state_output = state_cmd.output()?;
+        if !state_output.status.success() {
+            let stderr = String::from_utf8_lossy(&state_output.stderr)
+                .trim()
+                .to_string();
+            return Err(eyre::eyre!(
+                "gh issue {} failed for #{}: {stderr}",
+                if state == "closed" { "close" } else { "reopen" },
+                edited.number
+            ));
+        }
     }
 
     Ok(())
