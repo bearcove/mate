@@ -20,12 +20,22 @@ pub struct Pane {
     pub command: String,
 }
 
-/// List all tmux panes in the current session.
-pub fn list_panes() -> Result<Vec<Pane>> {
+/// List tmux panes in the same session as the given pane.
+pub fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
+    // Find which session this pane belongs to
+    let session_output = Command::new("tmux")
+        .args(["display-message", "-t", pane_id, "-p", "#{session_id}"])
+        .output()?;
+    if !session_output.status.success() {
+        return Err(eyre::eyre!("tmux display-message failed for pane {pane_id}"));
+    }
+    let session_id = String::from_utf8(session_output.stdout)?.trim().to_string();
+
     let output = Command::new("tmux")
         .args([
             "list-panes",
-            "-a",
+            "-t", &session_id,
+            "-s",
             "-F",
             "#{pane_id}\t#{pane_pid}\t#{pane_title}\t#{pane_current_command}",
         ])
@@ -132,9 +142,9 @@ fn is_agent_pane(p: &Pane) -> bool {
     })
 }
 
-/// Find a pane that is NOT the given pane_id and is running an agent.
+/// Find a pane in the same session that is running an agent.
 pub fn find_other_pane(my_pane_id: &str) -> Result<Pane> {
-    let panes = list_panes()?;
+    let panes = list_panes(my_pane_id)?;
     panes
         .into_iter()
         .find(|p| {
