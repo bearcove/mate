@@ -32,9 +32,40 @@ pub fn list_panes() -> Result<Vec<Pane>> {
     Ok(panes)
 }
 
-/// Send text to a tmux pane. Uses -l for literal text, then C-m to submit.
+/// Capture the visible content of a tmux pane.
+fn capture_pane(pane_id: &str) -> Result<String> {
+    let output = Command::new("tmux")
+        .args(["capture-pane", "-t", pane_id, "-p"])
+        .output()?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Wait until the pane shows a paste indicator, meaning the text has landed.
+/// Claude Code shows "[Pasted text '" and Codex shows "[Pasted Content ".
+fn wait_for_paste(pane_id: &str) -> Result<()> {
+    for _ in 0..100 {
+        let content = capture_pane(pane_id)?;
+        if content.contains("[Pasted text '") || content.contains("[Pasted Content ") {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // Timed out — send C-m anyway, best effort
+    Ok(())
+}
+
+/// Send text to a tmux pane. Uses -l for literal text, waits for paste indicator,
+/// then C-m to submit.
 pub fn send_to_pane(pane_id: &str, text: &str) -> Result<()> {
-    // Send the text literally (no key interpretation)
+    // Cancel any existing input
+    let status = Command::new("tmux")
+        .args(["send-keys", "-t", pane_id, "C-c"])
+        .status()?;
+    if !status.success() {
+        return Err(eyre::eyre!("tmux send-keys (C-c) failed for pane {pane_id}"));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
     let status = Command::new("tmux")
         .args(["send-keys", "-t", pane_id, "-l", text])
         .status()?;
@@ -42,9 +73,10 @@ pub fn send_to_pane(pane_id: &str, text: &str) -> Result<()> {
         return Err(eyre::eyre!("tmux send-keys (text) failed for pane {pane_id}"));
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Wait for the paste indicator to appear on screen
+    wait_for_paste(pane_id)?;
 
-    // Submit with C-m (carriage return) — "Enter" alone doesn't work in some apps
+    // Submit with C-m (carriage return)
     let status = Command::new("tmux")
         .args(["send-keys", "-t", pane_id, "C-m"])
         .status()?;
