@@ -199,7 +199,10 @@ async fn watch_responses(
                 Ok(content) => content,
                 Err(_) => "(could not read response file)".to_string(),
             };
-            let message = format!("{}\n{body}", crate::warmth::delivered());
+            let message = format!(
+                "{}\n{body}\n\nRemember: you're the captain. If there's follow-up work, assign it to your buddy — don't do it yourself. Stay focused on the big picture!",
+                crate::warmth::delivered()
+            );
             if let Err(e) = tmux::send_to_pane(&source_pane, &message) {
                 error!(
                     "failed to deliver response to pane {}: {e}",
