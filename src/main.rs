@@ -12,6 +12,7 @@ use eyre::Result;
 use facet::Facet;
 use figue as args;
 use std::io::Read as _;
+use std::time::Duration;
 use std::path::PathBuf;
 
 #[derive(Facet, Debug)]
@@ -76,6 +77,15 @@ enum Command {
         #[facet(args::positional)]
         request_id: String,
     },
+    /// Wait for a response with optional timeout
+    Wait {
+        /// The request ID to wait on
+        #[facet(args::positional)]
+        request_id: String,
+        /// Timeout in seconds (default: 90)
+        #[facet(args::named)]
+        timeout: Option<u64>,
+    },
 }
 
 const MANUAL: &str = r#"bud - cooperative agents over tmux
@@ -89,6 +99,8 @@ USAGE:
     bud spy <id>                     Peek at buddy's pane
     cat <<'EOF' | bud steer <id>     Steer buddy on a pending request
     cat <<'EOF' | bud update <id>    Send progress update to captain
+    bud wait <id>                    Wait for a response (default 90s timeout)
+    bud wait <id> --timeout <secs>   Wait with custom timeout
     bud issues                       Sync GitHub issues for current repo
     bud issue-create                 Create issues from new/*.md drafts
     cat <<'EOF' | bud assign                 Assign a task (clears worker context)
@@ -234,6 +246,10 @@ async fn main() -> Result<()> {
             std::fs::write(&path, &content)?;
             eprintln!("{}", warmth::responded());
             Ok(())
+        }
+        Some(Command::Wait { request_id, timeout }) => {
+            let timeout_secs = timeout.unwrap_or(90);
+            wait_for_response(&request_id, timeout_secs)
         }
     }
 }
@@ -615,7 +631,7 @@ fn sync_issues_to_pane() -> Result<()> {
         summary.push_str(&format!("\n  Browse deps:      ls {}/", deps_dir.display()));
     }
     summary.push_str(&format!(
-        "\n  Read the index:   cat {}\n  Read deps:        cat {}\n  Read labels:      cat {}\n  Read milestones:  cat {}\n  Read an issue:    cat {}/all/<filename>.md\n  Create an issue:  Write to {}/<name>.md then run: bud issues\n\nPick an issue to work on, then assign it to your captain with: bud assign",
+        "\n  Read the index:   cat {}\n  Read deps:        cat {}\n  Read labels:      cat {}\n  Read milestones:  cat {}\n  Read an issue:    cat {}/all/<filename>.md\n  Create an issue:  Write to {}/<name>.md then run: bud issues\n\nPick an issue to work on, then assign it to your buddy with: bud assign",
         result.index_path.display(),
         result.deps_markdown_path.display(),
         result.labels_markdown_path.display(),
@@ -626,6 +642,49 @@ fn sync_issues_to_pane() -> Result<()> {
     ));
     tmux::send_to_pane(&pane, &summary)?;
     Ok(())
+}
+
+fn wait_for_response(request_id: &str, timeout_secs: u64) -> Result<()> {
+    validate_request_id(request_id)?;
+    let session_name = tmux_session_name()?;
+    let request_path = request_dir(&session_name).join(request_id);
+    let request_meta = request_path.join("meta");
+    if !request_meta.is_file() {
+        return Err(eyre::eyre!(
+            "No matching request found for {request_id} in session {session_name}."
+        ));
+    }
+
+    let response_path = response_dir(&session_name).join(format!("{request_id}.md"));
+    let poll_interval = Duration::from_secs(2);
+    let mut waited = 0u64;
+    let mut next_progress = 10u64;
+
+    if response_path.exists() {
+        let response = std::fs::read_to_string(&response_path)?;
+        eprintln!("{response}");
+        return Ok(());
+    }
+
+    eprintln!("Waiting for response on {request_id} for up to {timeout_secs}s...");
+
+    while waited < timeout_secs {
+        std::thread::sleep(poll_interval);
+        waited += 2;
+
+        if response_path.exists() {
+            let response = std::fs::read_to_string(&response_path)?;
+            eprintln!("{response}");
+            return Ok(());
+        }
+
+        if waited >= next_progress {
+            eprintln!("Waiting for response... ({waited}s)");
+            next_progress += 10;
+        }
+    }
+
+    Err(eyre::eyre!("Timed out waiting for response on {request_id} after {timeout_secs}s"))
 }
 
 struct PendingIssueCreated {
