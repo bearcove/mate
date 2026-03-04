@@ -58,7 +58,7 @@ pub fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
 }
 
 /// Capture the visible content of a tmux pane.
-fn capture_pane(pane_id: &str) -> Result<String> {
+pub fn capture_pane(pane_id: &str) -> Result<String> {
     let output = Command::new("tmux")
         .args(["capture-pane", "-t", pane_id, "-p"])
         .output()?;

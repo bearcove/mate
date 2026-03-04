@@ -6,17 +6,24 @@ use roam_stream::StreamLink;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const STALENESS_SAMPLE_INTERVAL: Duration = Duration::from_secs(30);
+const STALENESS_NOTIFY_AFTER_UNCHANGED: u32 = 4;
 
 struct Request {
     source_pane: String,
     target_pane: String,
     title: Option<String>,
+}
+
+struct PaneState {
+    last_content: String,
+    unchanged_count: u32,
+    notified: bool,
 }
 
 #[derive(Clone)]
@@ -193,7 +200,7 @@ async fn watch_responses(
     request_dir: PathBuf,
     requests: Arc<Mutex<HashMap<String, Request>>>,
 ) {
-    let mut timeout_notified: HashSet<String> = HashSet::new();
+    let mut pane_states: HashMap<String, PaneState> = HashMap::new();
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<notify::Result<notify::Event>>();
 
     let mut watcher: Option<RecommendedWatcher> =
@@ -223,21 +230,21 @@ async fn watch_responses(
             }
         };
 
-    process_response_files(&response_dir, &request_dir, &requests, &mut timeout_notified).await;
+    process_response_files(&response_dir, &request_dir, &requests, &mut pane_states).await;
 
-    let mut timeout_tick = tokio::time::interval(Duration::from_secs(2));
+    let mut staleness_tick = tokio::time::interval(STALENESS_SAMPLE_INTERVAL);
     let mut poll_tick = tokio::time::interval(Duration::from_secs(2));
 
     loop {
         if watcher.is_some() {
             tokio::select! {
-                _ = timeout_tick.tick() => {
-                    run_timeout_checks(&request_dir, &response_dir, &mut timeout_notified);
+                _ = staleness_tick.tick() => {
+                    run_staleness_checks(&request_dir, &response_dir, &mut pane_states);
                 }
                 maybe_event = event_rx.recv() => {
                     match maybe_event {
                         Some(Ok(event)) if matches!(event.kind, EventKind::Create(_)) => {
-                            process_response_files(&response_dir, &request_dir, &requests, &mut timeout_notified).await;
+                            process_response_files(&response_dir, &request_dir, &requests, &mut pane_states).await;
                         }
                         Some(Ok(_)) => {}
                         Some(Err(e)) => {
@@ -252,21 +259,21 @@ async fn watch_responses(
             }
         } else {
             tokio::select! {
-                _ = timeout_tick.tick() => {
-                    run_timeout_checks(&request_dir, &response_dir, &mut timeout_notified);
+                _ = staleness_tick.tick() => {
+                    run_staleness_checks(&request_dir, &response_dir, &mut pane_states);
                 }
                 _ = poll_tick.tick() => {
-                    process_response_files(&response_dir, &request_dir, &requests, &mut timeout_notified).await;
+                    process_response_files(&response_dir, &request_dir, &requests, &mut pane_states).await;
                 }
             }
         }
     }
 }
 
-fn run_timeout_checks(
+fn run_staleness_checks(
     request_dir: &std::path::Path,
     response_dir: &std::path::Path,
-    timeout_notified: &mut HashSet<String>,
+    pane_states: &mut HashMap<String, PaneState>,
 ) {
     let mut active_request_ids: HashSet<String> = HashSet::new();
     if let Ok(request_entries) = std::fs::read_dir(request_dir) {
@@ -284,26 +291,7 @@ fn run_timeout_checks(
             active_request_ids.insert(request_id.clone());
 
             let response_path = response_dir.join(format!("{request_id}.md"));
-            if response_path.exists() || timeout_notified.contains(&request_id) {
-                continue;
-            }
-
-            let metadata = match std::fs::metadata(&path) {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
-            };
-            let created_or_modified = metadata
-                .created()
-                .ok()
-                .or_else(|| metadata.modified().ok());
-            let age = match created_or_modified
-                .and_then(|timestamp| SystemTime::now().duration_since(timestamp).ok())
-            {
-                Some(age) => age,
-                None => continue,
-            };
-
-            if age <= REQUEST_TIMEOUT {
+            if response_path.exists() {
                 continue;
             }
 
@@ -311,33 +299,63 @@ fn run_timeout_checks(
                 Some(meta) => meta,
                 None => continue,
             };
+            let pane_content = match tmux::capture_pane(&meta.target_pane) {
+                Ok(content) => content,
+                Err(e) => {
+                    error!(
+                        "failed to capture pane {} for request {}: {e}",
+                        meta.target_pane, request_id
+                    );
+                    continue;
+                }
+            };
+
+            let state = pane_states
+                .entry(request_id.clone())
+                .or_insert_with(|| PaneState {
+                    last_content: pane_content.clone(),
+                    unchanged_count: 0,
+                    notified: false,
+                });
+            if pane_content == state.last_content {
+                state.unchanged_count += 1;
+            } else {
+                state.last_content = pane_content.clone();
+                state.unchanged_count = 0;
+                state.notified = false;
+            }
+
+            if state.notified || state.unchanged_count < STALENESS_NOTIFY_AFTER_UNCHANGED {
+                continue;
+            }
+
+            let title_suffix = meta
+                .title
+                .as_deref()
+                .map(|title| format!(" ({title})"))
+                .unwrap_or_default();
             let message = format!(
-                "⏰ Hey captain — your task {request_id}{} has been pending for {}. Your buddy might be stuck!",
-                meta.title
-                    .as_deref()
-                    .map(|title| format!(" ({title})"))
-                    .unwrap_or_default(),
-                crate::util::format_age(age),
+                "⏰ Hey captain — your buddy seems stuck on task {request_id}{title_suffix}. Their pane has been unchanged for 2 minutes.\n\nPane content:\n```\n{pane_content}\n```"
             );
             if let Err(e) = tmux::send_to_pane(&meta.source_pane, &message) {
                 error!(
-                    "failed to deliver timeout notification for request {} to pane {}: {e}",
+                    "failed to deliver staleness notification for request {} to pane {}: {e}",
                     request_id, meta.source_pane
                 );
                 continue;
             }
 
-            timeout_notified.insert(request_id);
+            state.notified = true;
         }
     }
-    timeout_notified.retain(|id| active_request_ids.contains(id));
+    pane_states.retain(|id, _| active_request_ids.contains(id));
 }
 
 async fn process_response_files(
     response_dir: &std::path::Path,
     request_dir: &std::path::Path,
     requests: &Arc<Mutex<HashMap<String, Request>>>,
-    timeout_notified: &mut HashSet<String>,
+    pane_states: &mut HashMap<String, PaneState>,
 ) {
     let entries = match std::fs::read_dir(response_dir) {
         Ok(e) => e,
@@ -387,7 +405,7 @@ async fn process_response_files(
         {
             error!("failed to remove request directory {}: {e}", request_path.display());
         }
-        timeout_notified.remove(&request_id);
+        pane_states.remove(&request_id);
         if let Err(e) = std::fs::remove_file(&path)
             && e.kind() != std::io::ErrorKind::NotFound
         {
