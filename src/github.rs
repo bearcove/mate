@@ -390,9 +390,18 @@ pub fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSyncResult
     )?;
 
     let issue_numbers = issues.iter().map(|i| i.number).collect::<Vec<_>>();
-    let relationships = fetch_issue_relationships(repo, &issue_numbers)?;
     let deps_markdown_path = dir.join("DEPS.md");
-    let deps_path = write_deps(repo, &dir, &deps_markdown_path, &relationships, &number_to_filename)?;
+    let deps_path = match fetch_issue_relationships(repo, &issue_numbers) {
+        Ok(relationships) => write_deps(repo, &dir, &deps_markdown_path, &relationships, &number_to_filename)?,
+        Err(e) => {
+            eprintln!("Warning: could not fetch issue dependencies (GraphQL): {e}");
+            let deps_md = format!(
+                "# Dependencies for {repo}\n\nDependency information unavailable (GraphQL query failed).\n"
+            );
+            std::fs::write(&deps_markdown_path, deps_md)?;
+            None
+        }
+    };
 
     let labels_markdown_path = dir.join("LABELS.md");
     let labels = sync_labels(repo)?;
