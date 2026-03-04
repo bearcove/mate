@@ -6,6 +6,8 @@ pub struct AssignRequest {
     pub source_pane: String,
     /// The task content (read from stdin by the CLI)
     pub content: String,
+    /// Optional title for the task
+    pub title: Option<String>,
     /// Whether to send /clear to the worker before the task
     pub clear: bool,
     /// Fingerprint of the client binary used to detect upgrades

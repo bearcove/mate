@@ -14,6 +14,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 struct Request {
     source_pane: String,
+    title: Option<String>,
 }
 
 #[derive(Clone)]
@@ -32,11 +33,12 @@ impl crate::protocol::Coop for CoopServer {
         let crate::protocol::AssignRequest {
             source_pane,
             content,
+            title,
             clear,
             binary_hash: _,
         } = req;
         let request_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-        let source_pane_for_file = source_pane.clone();
+        let title_for_file = title.clone();
 
         // Find the other pane to send to
         let target = match tmux::find_other_pane(&source_pane) {
@@ -51,9 +53,10 @@ impl crate::protocol::Coop for CoopServer {
         self.requests
             .lock()
             .await
-            .insert(request_id.clone(), Request { source_pane });
+            .insert(request_id.clone(), Request { source_pane: source_pane.clone(), title });
         let request_path = self.request_dir.join(&request_id);
-        if let Err(e) = std::fs::write(&request_path, &source_pane_for_file) {
+        let request_file_contents = serialize_request_file(&source_pane, title_for_file.as_deref());
+        if let Err(e) = std::fs::write(&request_path, request_file_contents) {
             self.requests.lock().await.remove(&request_id);
             return Err(format!(
                 "failed to persist request {} to {}: {e}",
@@ -70,9 +73,14 @@ impl crate::protocol::Coop for CoopServer {
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
 
+        let task_content = if let Some(title) = title_for_file {
+            format!("## {title}\n\n{content}")
+        } else {
+            content
+        };
         let message = format!(
             "{}\n\n\
-             {content}\n\n\
+             {task_content}\n\n\
              IMPORTANT: When you're done, you MUST send your response by executing \
              this shell command (use your Bash/shell tool — do NOT just print it as text):\n\n\
              cat <<'BUDEOF' | bud respond {request_id}\n\
@@ -213,13 +221,17 @@ async fn watch_responses(
                     continue;
                 }
 
-                let source_pane = match std::fs::read_to_string(&path) {
-                    Ok(source_pane) => source_pane.trim().to_string(),
-                    Err(_) => continue,
+                let (source_pane, title) = match parse_request_file(&path) {
+                    Some(request) => request,
+                    None => continue,
                 };
                 let message = format!(
-                    "⏰ Hey captain — your task {request_id} has been pending for {}. Your buddy might be stuck!",
-                    format_age(age)
+                    "⏰ Hey captain — your task {request_id}{} has been pending for {}. Your buddy might be stuck!",
+                    title
+                        .as_deref()
+                        .map(|title| format!(" ({title})"))
+                        .unwrap_or_default(),
+                    format_age(age),
                 );
                 if let Err(e) = tmux::send_to_pane(&source_pane, &message) {
                     error!(
@@ -251,12 +263,12 @@ async fn watch_responses(
                 reqs.remove(&request_id)
             };
             let request_path = request_dir.join(&request_id);
-            let source_pane = if let Some(request) = in_memory_request {
-                request.source_pane
+            let (source_pane, title) = if let Some(request) = in_memory_request {
+                (request.source_pane, request.title)
             } else {
-                match std::fs::read_to_string(&request_path) {
-                    Ok(source_pane) => source_pane.trim().to_string(),
-                    Err(_) => continue,
+                match parse_request_file(&request_path) {
+                    Some(request) => request,
+                    None => continue,
                 }
             };
 
@@ -264,9 +276,13 @@ async fn watch_responses(
                 Ok(content) => content,
                 Err(_) => "(could not read response file)".to_string(),
             };
+            let intro = if let Some(title) = title.as_deref() {
+                format!("Fresh from your buddy — re: {title}")
+            } else {
+                crate::warmth::delivered().to_string()
+            };
             let message = format!(
-                "{}\n{body}\n\nRemember: you're the captain. If there's follow-up work, assign it to your buddy — don't do it yourself. Stay focused on the big picture!",
-                crate::warmth::delivered()
+                "{intro}\n{body}\n\nRemember: you're the captain. If there's follow-up work, assign it to your buddy — don't do it yourself. Stay focused on the big picture!"
             );
             if let Err(e) = tmux::send_to_pane(&source_pane, &message) {
                 error!(
@@ -304,4 +320,26 @@ fn format_age(age: Duration) -> String {
     } else {
         format!("{}d", secs / 86_400)
     }
+}
+
+fn serialize_request_file(source_pane: &str, title: Option<&str>) -> String {
+    match title {
+        Some(title) if !title.trim().is_empty() => format!("{source_pane}\n{}", title.trim()),
+        _ => source_pane.to_string(),
+    }
+}
+
+fn parse_request_file(path: &std::path::Path) -> Option<(String, Option<String>)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut lines = content.lines();
+    let source_pane = lines.next()?.trim().to_string();
+    if source_pane.is_empty() {
+        return None;
+    }
+    let title = lines
+        .next()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(ToString::to_string);
+    Some((source_pane, title))
 }

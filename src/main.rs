@@ -28,6 +28,9 @@ enum Command {
         /// Keep the worker's existing context (default: clear it)
         #[facet(args::named)]
         keep: bool,
+        /// Optional short title for the task
+        #[facet(args::named)]
+        title: Option<String>,
     },
     /// Respond to a task (reads from stdin)
     Respond {
@@ -43,8 +46,9 @@ USAGE:
     bud                              Show this manual
     bud server                       Start the server (usually auto-started)
     bud list                         List pending/in-flight requests
-    cat <<'EOF' | bud assign         Assign a task (clears worker context)
-    cat <<'EOF' | bud assign --keep  Assign, keeping worker's context
+    cat <<'EOF' | bud assign                 Assign a task (clears worker context)
+    cat <<'EOF' | bud assign --keep          Assign, keeping worker's context
+    cat <<'EOF' | bud assign --title "..."   Assign with a title
     cat <<'EOF' | bud respond <id>   Respond to a task (reads stdin)
 
 EXAMPLES:
@@ -114,12 +118,12 @@ async fn main() -> Result<()> {
                 .await
         }
         Some(Command::List) => list_requests(),
-        Some(Command::Assign { keep }) => {
+        Some(Command::Assign { keep, title }) => {
             let pane = std::env::var("TMUX_PANE")
                 .map_err(|_| eyre::eyre!("TMUX_PANE not set — are you inside tmux?"))?;
             let content = read_stdin()?;
             ensure_server_running().await?;
-            client_assign(pane, content, !keep).await
+            client_assign(pane, content, !keep, title).await
         }
         Some(Command::Respond { request_id }) => {
             if request_id.len() != 8 || !request_id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
@@ -179,10 +183,10 @@ async fn ensure_server_running() -> Result<()> {
     ))
 }
 
-async fn client_assign(source_pane: String, content: String, clear: bool) -> Result<()> {
+async fn client_assign(source_pane: String, content: String, clear: bool, title: Option<String>) -> Result<()> {
     let binary_hash = hash::binary_hash();
 
-    match assign_once(&source_pane, &content, clear, &binary_hash).await {
+    match assign_once(&source_pane, &content, clear, title.clone(), &binary_hash).await {
         Ok(_) => {
             eprintln!("{}", warmth::assigned());
             Ok(())
@@ -190,7 +194,7 @@ async fn client_assign(source_pane: String, content: String, clear: bool) -> Res
         Err(first_error) => {
             eprintln!("bud: assign failed: {first_error:?}");
             ensure_server_running().await?;
-            assign_once(&source_pane, &content, clear, &binary_hash)
+            assign_once(&source_pane, &content, clear, title, &binary_hash)
                 .await
                 .map_err(|e| {
                     eprintln!("bud: assign failed after retry: {e:?}");
@@ -202,7 +206,13 @@ async fn client_assign(source_pane: String, content: String, clear: bool) -> Res
     }
 }
 
-async fn assign_once(source_pane: &str, content: &str, clear: bool, binary_hash: &str) -> Result<String> {
+async fn assign_once(
+    source_pane: &str,
+    content: &str,
+    clear: bool,
+    title: Option<String>,
+    binary_hash: &str,
+) -> Result<String> {
     use roam_stream::StreamLink;
 
     let stream = tokio::net::UnixStream::connect(socket_path()).await?;
@@ -214,6 +224,7 @@ async fn assign_once(source_pane: &str, content: &str, clear: bool, binary_hash:
         .assign(protocol::AssignRequest {
             source_pane: source_pane.to_string(),
             content: content.to_string(),
+            title,
             clear,
             binary_hash: binary_hash.to_string(),
         })
@@ -238,7 +249,7 @@ fn list_requests() -> Result<()> {
         Err(e) => return Err(e.into()),
     };
 
-    let mut rows: Vec<(String, String, String, &'static str)> = Vec::new();
+    let mut rows: Vec<(String, String, Option<String>, String, &'static str)> = Vec::new();
     let now = SystemTime::now();
 
     for entry in entries {
@@ -248,9 +259,8 @@ fn list_requests() -> Result<()> {
         }
 
         let id = entry.file_name().to_string_lossy().to_string();
-        let source_pane = std::fs::read_to_string(entry.path())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|_| "(unreadable)".to_string());
+        let (source_pane, title) = parse_request_file(&entry.path())
+            .unwrap_or_else(|| ("(unreadable)".to_string(), None));
 
         let age = entry
             .metadata()
@@ -266,7 +276,7 @@ fn list_requests() -> Result<()> {
             "no"
         };
 
-        rows.push((id, source_pane, age, response_exists));
+        rows.push((id, source_pane, title, age, response_exists));
     }
 
     if rows.is_empty() {
@@ -275,11 +285,27 @@ fn list_requests() -> Result<()> {
     }
 
     rows.sort_by(|a, b| a.0.cmp(&b.0));
+    let show_title = rows.iter().any(|(_, _, title, _, _)| title.is_some());
 
-    eprintln!("REQUEST     SOURCE        AGE         RESPONSE");
-    eprintln!("----------  ------------  ----------  --------");
-    for (id, source, age, response) in rows {
-        eprintln!("{:<10}  {:<12}  {:<10}  {}", id, source, age, response);
+    if show_title {
+        eprintln!("REQUEST     SOURCE        TITLE                      AGE         RESPONSE");
+        eprintln!("----------  ------------  -------------------------  ----------  --------");
+        for (id, source, title, age, response) in rows {
+            eprintln!(
+                "{:<10}  {:<12}  {:<25}  {:<10}  {}",
+                id,
+                source,
+                title.unwrap_or_else(|| "-".to_string()),
+                age,
+                response
+            );
+        }
+    } else {
+        eprintln!("REQUEST     SOURCE        AGE         RESPONSE");
+        eprintln!("----------  ------------  ----------  --------");
+        for (id, source, _title, age, response) in rows {
+            eprintln!("{:<10}  {:<12}  {:<10}  {}", id, source, age, response);
+        }
     }
 
     Ok(())
@@ -296,4 +322,19 @@ fn format_age(age: std::time::Duration) -> String {
     } else {
         format!("{}d", secs / 86_400)
     }
+}
+
+fn parse_request_file(path: &std::path::Path) -> Option<(String, Option<String>)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut lines = content.lines();
+    let source_pane = lines.next()?.trim().to_string();
+    if source_pane.is_empty() {
+        return None;
+    }
+    let title = lines
+        .next()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(ToString::to_string);
+    Some((source_pane, title))
 }
