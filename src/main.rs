@@ -561,14 +561,28 @@ fn sync_issues_to_pane() -> Result<()> {
     let issues = github::sync_issues(&repo)?;
     let result = github::write_issue_files(&repo, &issues)?;
 
-    let summary = format!(
-        "Issues synced for {repo} — {} open, {} closed.\nBrowse: {}\nOpen issues: {}\nAll issues: {}",
+    let mut summary = format!(
+        "Issues synced for {repo} — {} open, {} closed.\n\n  Browse all:       ls {}/\n  Browse open:      ls {}/\n  Browse closed:    ls {}/",
         result.open_count,
         result.closed_count,
-        result.index_path.display(),
+        result.all_dir.display(),
         result.open_dir.display(),
-        result.all_dir.display()
+        result.closed_dir.display(),
     );
+    if let Some(labels_dir) = result.labels_dir.as_ref() {
+        summary.push_str(&format!("\n  Browse by label:  ls {}/", labels_dir.display()));
+    }
+    if let Some(milestones_dir) = result.milestones_dir.as_ref() {
+        summary.push_str(&format!(
+            "\n  Browse by milestone: ls {}/",
+            milestones_dir.display()
+        ));
+    }
+    summary.push_str(&format!(
+        "\n  Read the index:   cat {}\n  Read an issue:    cat {}/all/<filename>.md\n\nPick an issue to work on, then assign it to your captain with: bud assign",
+        result.index_path.display(),
+        result.base_dir.display()
+    ));
     tmux::send_to_pane(&pane, &summary)?;
     Ok(())
 }

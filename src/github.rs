@@ -50,8 +50,12 @@ pub struct Comment {
 
 #[derive(Debug, Clone)]
 pub struct IssueSyncResult {
+    pub base_dir: PathBuf,
     pub index_path: PathBuf,
     pub open_dir: PathBuf,
+    pub closed_dir: PathBuf,
+    pub labels_dir: Option<PathBuf>,
+    pub milestones_dir: Option<PathBuf>,
     pub all_dir: PathBuf,
     pub open_count: usize,
     pub closed_count: usize,
@@ -148,6 +152,44 @@ pub fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSyncResult
         }
     }
 
+    let has_any_labels = issues.iter().any(|issue| !issue.labels.is_empty());
+    let labels_dir = if has_any_labels {
+        let root = dir.join("labels");
+        std::fs::create_dir_all(&root)?;
+        for issue in issues {
+            let filename = issue_filename(issue);
+            for label in &issue.labels {
+                let label_dir = root.join(sanitize_title_for_filename(&label.name));
+                std::fs::create_dir_all(&label_dir)?;
+                create_symlink(&format!("../../all/{filename}"), &label_dir.join(&filename))?;
+            }
+        }
+        Some(root)
+    } else {
+        None
+    };
+
+    let has_any_milestones = issues.iter().any(|issue| issue.milestone.is_some());
+    let milestones_dir = if has_any_milestones {
+        let root = dir.join("milestones");
+        std::fs::create_dir_all(&root)?;
+        for issue in issues {
+            let Some(milestone) = issue.milestone.as_ref() else {
+                continue;
+            };
+            let filename = issue_filename(issue);
+            let milestone_dir = root.join(sanitize_title_for_filename(&milestone.title));
+            std::fs::create_dir_all(&milestone_dir)?;
+            create_symlink(
+                &format!("../../all/{filename}"),
+                &milestone_dir.join(&filename),
+            )?;
+        }
+        Some(root)
+    } else {
+        None
+    };
+
     open_issues.sort_by(|a, b| b.number.cmp(&a.number));
     closed_issues.sort_by(|a, b| b.number.cmp(&a.number));
 
@@ -158,8 +200,12 @@ pub fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSyncResult
     )?;
 
     Ok(IssueSyncResult {
+        base_dir: dir,
         index_path,
         open_dir,
+        closed_dir,
+        labels_dir,
+        milestones_dir,
         all_dir,
         open_count: open_issues.len(),
         closed_count: closed_issues.len(),
