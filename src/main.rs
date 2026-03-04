@@ -111,6 +111,11 @@ async fn main() -> Result<()> {
             client_assign(pane, content, !keep).await
         }
         Some(Command::Respond { request_id }) => {
+            if request_id.len() != 8 || !request_id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                return Err(eyre::eyre!(
+                    "invalid request ID (expected 8 hex chars)"
+                ));
+            }
             let content = read_stdin()?;
             // Write the response file directly — no RPC needed
             std::fs::create_dir_all(response_dir())?;
