@@ -464,7 +464,7 @@ pub fn parse_new_issue(content: &str) -> Result<NewIssue> {
     })
 }
 
-pub fn create_issue(repo: &str, issue: &NewIssue) -> Result<u64> {
+pub fn create_issue(repo: &str, issue: &NewIssue) -> Result<(u64, String)> {
     let mut cmd = Command::new("gh");
     cmd.args(["issue", "create", "-R", repo, "--title", &issue.title, "--body", &issue.body]);
     for label in &issue.labels {
@@ -484,9 +484,10 @@ pub fn create_issue(repo: &str, issue: &NewIssue) -> Result<u64> {
     }
 
     let stdout = String::from_utf8(output.stdout)?.trim().to_string();
-    parse_issue_number_from_create_output(&stdout).ok_or_else(|| {
+    let issue_number = parse_issue_number_from_create_output(&stdout).ok_or_else(|| {
         eyre::eyre!("could not parse issue number from gh issue create output: {stdout}")
-    })
+    })?;
+    Ok((issue_number, stdout))
 }
 
 pub fn ensure_label_exists(repo: &str, label: &str) -> Result<()> {
@@ -895,7 +896,7 @@ fn parse_repo_from_remote(remote: &str) -> Result<String> {
         rest
     } else {
         return Err(eyre::eyre!(
-            "unsupported remote URL format for GitHub: {remote}"
+        "bud issues only supports GitHub repositories. Remote origin points to: {remote}"
         ));
     };
 

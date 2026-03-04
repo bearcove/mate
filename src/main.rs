@@ -638,7 +638,7 @@ fn issue_create_from_files() -> Result<()> {
 
     let mut existing_labels = github::sync_labels_set(&repo)?;
     let mut existing_milestones = github::sync_milestones_set(&repo)?;
-    let mut created: Vec<(u64, String)> = Vec::new();
+    let mut created: Vec<(u64, String, String)> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
 
     for entry in entries {
@@ -691,10 +691,10 @@ fn issue_create_from_files() -> Result<()> {
         }
 
         match github::create_issue(&repo, &draft) {
-            Ok(number) => {
+            Ok((number, url)) => {
                 let filename = github::issue_filename_for_number_title(number, &draft.title);
                 move_file(&path, &created_dir.join(&filename))?;
-                created.push((number, draft.title));
+                created.push((number, url, draft.title));
             }
             Err(e) => {
                 move_file(&path, &failed_dir.join(&original_name))?;
@@ -708,8 +708,8 @@ fn issue_create_from_files() -> Result<()> {
         created.len(),
         failed.len()
     );
-    for (number, title) in &created {
-        summary.push_str(&format!("\nCreated issue #{number}: {title}"));
+    for (number, url, title) in &created {
+        summary.push_str(&format!("\nCreated issue #{number}: {title}\n{url}"));
     }
     for (name, error) in &failed {
         summary.push_str(&format!("\nFailed {name}: {error}"));

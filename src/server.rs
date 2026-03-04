@@ -509,7 +509,7 @@ fn process_new_issue_files() {
                 }
 
                 match github::create_issue(&repo, &draft) {
-                    Ok(number) => {
+                    Ok((number, url)) => {
                         let filename = github::issue_filename_for_number_title(number, &draft.title);
                         if let Err(move_err) =
                             move_file_overwrite(&path, &created_dir.join(&filename))
@@ -523,7 +523,10 @@ fn process_new_issue_files() {
                         }
                         notify_issue_result(
                             pane.as_deref(),
-                            &format!("Created issue #{number}: {} ({repo})", draft.title),
+                            &format!(
+                                "Created issue #{number}: {}\n{url}\n({repo})",
+                                draft.title
+                            ),
                         );
                     }
                     Err(e) => {
