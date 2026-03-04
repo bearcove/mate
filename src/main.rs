@@ -512,20 +512,8 @@ fn spy_request(request_id: &str) -> Result<()> {
 fn list_requests() -> Result<()> {
     use std::time::SystemTime;
 
-    let session_name = tmux_session_name()?;
-    let request_dir = request_dir(&session_name);
-    let response_dir = response_dir(&session_name);
-
-    let entries = match std::fs::read_dir(&request_dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("No tasks in flight — all clear!");
-            return Ok(());
-        }
-        Err(e) => return Err(e.into()),
-    };
-
     struct Row {
+        session: String,
         id: String,
         source: String,
         target: String,
@@ -533,60 +521,71 @@ fn list_requests() -> Result<()> {
         age: String,
         response: &'static str,
     }
+
     let mut rows: Vec<Row> = Vec::new();
     let now = SystemTime::now();
-
-    for entry in entries {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
+    let request_root = request_root_dir();
+    if let Ok(session_entries) = std::fs::read_dir(&request_root) {
+        for session_entry in session_entries.flatten() {
+            if !session_entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                continue;
+            }
+            let session_name = session_entry.file_name().to_string_lossy().to_string();
+            let session_request_dir = session_entry.path();
+            let session_response_dir = response_dir(&session_name);
+            let request_entries = match std::fs::read_dir(&session_request_dir) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+            for entry in request_entries.flatten() {
+                if !entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                    continue;
+                }
+                let id = entry.file_name().to_string_lossy().to_string();
+                let (source_pane, target_pane, title) = util::read_request_meta(&entry.path())
+                    .map(|meta| (meta.source_pane, meta.target_pane, meta.title))
+                    .unwrap_or_else(|| ("(unreadable)".to_string(), "(unknown)".to_string(), None));
+                let age = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|meta| meta.created().ok().or_else(|| meta.modified().ok()))
+                    .and_then(|timestamp| now.duration_since(timestamp).ok())
+                    .map(util::format_age)
+                    .unwrap_or_else(|| "unknown".to_string());
+                let response_exists = if session_response_dir.join(format!("{id}.md")).exists() {
+                    "yes"
+                } else {
+                    "no"
+                };
+                rows.push(Row {
+                    session: session_name.clone(),
+                    id,
+                    source: source_pane,
+                    target: target_pane,
+                    title,
+                    age,
+                    response: response_exists,
+                });
+            }
         }
-
-        let id = entry.file_name().to_string_lossy().to_string();
-        let (source_pane, target_pane, title) = util::read_request_meta(&entry.path())
-            .map(|meta| (meta.source_pane, meta.target_pane, meta.title))
-            .unwrap_or_else(|| ("(unreadable)".to_string(), "(unknown)".to_string(), None));
-
-        let age = entry
-            .metadata()
-            .ok()
-            .and_then(|meta| meta.created().ok().or_else(|| meta.modified().ok()))
-            .and_then(|timestamp| now.duration_since(timestamp).ok())
-            .map(util::format_age)
-            .unwrap_or_else(|| "unknown".to_string());
-
-        let response_exists = if response_dir.join(format!("{id}.md")).exists() {
-            "yes"
-        } else {
-            "no"
-        };
-
-        rows.push(Row {
-            id,
-            source: source_pane,
-            target: target_pane,
-            title,
-            age,
-            response: response_exists,
-        });
     }
 
     if rows.is_empty() {
         eprintln!("No tasks in flight — all clear!");
     } else {
-        rows.sort_by(|a, b| a.id.cmp(&b.id));
+        rows.sort_by(|a, b| a.session.cmp(&b.session).then(a.id.cmp(&b.id)));
         let show_title = rows.iter().any(|r| r.title.is_some());
-
         if show_title {
             eprintln!(
-                "REQUEST     SOURCE        TARGET       TITLE                      AGE         RESPONSE"
+                "SESSION              REQUEST     SOURCE        TARGET       TITLE                      AGE         RESPONSE"
             );
             eprintln!(
-                "----------  ------------  -----------  -------------------------  ----------  --------"
+                "-------------------  ----------  ------------  -----------  -------------------------  ----------  --------"
             );
             for r in &rows {
                 eprintln!(
-                    "{:<10}  {:<12}  {:<11}  {:<25}  {:<10}  {}",
+                    "{:<19}  {:<10}  {:<12}  {:<11}  {:<25}  {:<10}  {}",
+                    r.session,
                     r.id,
                     r.source,
                     r.target,
@@ -596,53 +595,50 @@ fn list_requests() -> Result<()> {
                 );
             }
         } else {
-            eprintln!("REQUEST     SOURCE        TARGET       AGE         RESPONSE");
-            eprintln!("----------  ------------  -----------  ----------  --------");
+            eprintln!("SESSION              REQUEST     SOURCE        TARGET       AGE         RESPONSE");
+            eprintln!("-------------------  ----------  ------------  -----------  ----------  --------");
             for r in &rows {
                 eprintln!(
-                    "{:<10}  {:<12}  {:<11}  {:<10}  {}",
-                    r.id, r.source, r.target, r.age, r.response
+                    "{:<19}  {:<10}  {:<12}  {:<11}  {:<10}  {}",
+                    r.session, r.id, r.source, r.target, r.age, r.response
                 );
             }
         }
     }
 
-    if let Ok(my_pane) = std::env::var("TMUX_PANE") {
-        match tmux::list_panes(&my_pane) {
-            Ok(panes) => {
-                eprintln!();
-                eprintln!("PANE       AGENT    STATE    CONTEXT            ACTIVITY");
+    eprintln!();
+    match tmux::list_all_panes() {
+        Ok(panes) => {
+            eprintln!("SESSION              PANE       AGENT    STATE    CONTEXT            ACTIVITY");
+            eprintln!(
+                "-------------------  ---------  -------  -------  -----------------  ----------------------------------------"
+            );
+            for p in panes {
+                let capture = tmux::capture_pane(&p.id).unwrap_or_default();
+                let parsed = pane::parse_pane_content(&capture);
+                let agent = match parsed.agent_type {
+                    Some(pane::AgentType::Claude) => "Claude",
+                    Some(pane::AgentType::Codex) => "Codex",
+                    None => "Unknown",
+                };
+                let state = match parsed.state {
+                    pane::AgentState::Working => "Working",
+                    pane::AgentState::Idle => "Idle",
+                    pane::AgentState::Unknown => "Unknown",
+                };
+                let context = parsed.context_remaining.unwrap_or_else(|| "-".to_string());
+                let activity = parsed
+                    .activity
+                    .map(|value| value.replace('\n', " "))
+                    .unwrap_or_else(|| "-".to_string());
                 eprintln!(
-                    "---------  -------  -------  -----------------  ----------------------------------------"
+                    "{:<19}  {:<9}  {:<7}  {:<7}  {:<17}  {}",
+                    p.session_name, p.id, agent, state, context, activity
                 );
-                for p in panes {
-                    let capture = tmux::capture_pane(&p.id).unwrap_or_default();
-                    let parsed = pane::parse_pane_content(&capture);
-                    let agent = match parsed.agent_type {
-                        Some(pane::AgentType::Claude) => "Claude",
-                        Some(pane::AgentType::Codex) => "Codex",
-                        None => "Unknown",
-                    };
-                    let state = match parsed.state {
-                        pane::AgentState::Working => "Working",
-                        pane::AgentState::Idle => "Idle",
-                        pane::AgentState::Unknown => "Unknown",
-                    };
-                    let context = parsed.context_remaining.unwrap_or_else(|| "-".to_string());
-                    let activity = parsed
-                        .activity
-                        .map(|value| value.replace('\n', " "))
-                        .unwrap_or_else(|| "-".to_string());
-                    eprintln!(
-                        "{:<9}  {:<7}  {:<7}  {:<17}  {}",
-                        p.id, agent, state, context, activity
-                    );
-                }
             }
-            Err(e) => {
-                eprintln!();
-                eprintln!("(pane parser unavailable: {e})");
-            }
+        }
+        Err(e) => {
+            eprintln!("Panes unavailable: {e}");
         }
     }
 

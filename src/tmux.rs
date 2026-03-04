@@ -16,6 +16,7 @@ fn generate_marker() -> String {
 pub struct Pane {
     pub id: String,
     pub pid: u32,
+    pub session_name: String,
 }
 
 /// List tmux panes in the same session as the given pane.
@@ -38,7 +39,7 @@ pub fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
             &session_id,
             "-s",
             "-F",
-            "#{pane_id}\t#{pane_pid}",
+            "#{pane_id}\t#{pane_pid}\t#{session_name}",
         ])
         .output()?;
 
@@ -50,13 +51,45 @@ pub fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
     let panes = stdout
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(2, '\t');
+            let mut parts = line.splitn(3, '\t');
             let id = parts.next()?.to_string();
             let pid = parts.next()?.parse().ok()?;
-            Some(Pane { id, pid })
+            let session_name = parts.next()?.to_string();
+            Some(Pane {
+                id,
+                pid,
+                session_name,
+            })
         })
         .collect();
 
+    Ok(panes)
+}
+
+/// List all tmux panes across all sessions.
+pub fn list_all_panes() -> Result<Vec<Pane>> {
+    let output = Command::new("tmux")
+        .args(["list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}\t#{session_name}"])
+        .output()?;
+    if !output.status.success() {
+        return Err(eyre::eyre!("tmux list-panes -a failed"));
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let panes = stdout
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '\t');
+            let id = parts.next()?.to_string();
+            let pid = parts.next()?.parse().ok()?;
+            let session_name = parts.next()?.to_string();
+            Some(Pane {
+                id,
+                pid,
+                session_name,
+            })
+        })
+        .collect();
     Ok(panes)
 }
 
