@@ -573,38 +573,76 @@ fn list_requests() -> Result<()> {
 
     if rows.is_empty() {
         eprintln!("No tasks in flight — all clear!");
-        return Ok(());
+    } else {
+        rows.sort_by(|a, b| a.id.cmp(&b.id));
+        let show_title = rows.iter().any(|r| r.title.is_some());
+
+        if show_title {
+            eprintln!(
+                "REQUEST     SOURCE        TARGET       TITLE                      AGE         RESPONSE"
+            );
+            eprintln!(
+                "----------  ------------  -----------  -------------------------  ----------  --------"
+            );
+            for r in &rows {
+                eprintln!(
+                    "{:<10}  {:<12}  {:<11}  {:<25}  {:<10}  {}",
+                    r.id,
+                    r.source,
+                    r.target,
+                    r.title.as_deref().unwrap_or("-"),
+                    r.age,
+                    r.response
+                );
+            }
+        } else {
+            eprintln!("REQUEST     SOURCE        TARGET       AGE         RESPONSE");
+            eprintln!("----------  ------------  -----------  ----------  --------");
+            for r in &rows {
+                eprintln!(
+                    "{:<10}  {:<12}  {:<11}  {:<10}  {}",
+                    r.id, r.source, r.target, r.age, r.response
+                );
+            }
+        }
     }
 
-    rows.sort_by(|a, b| a.id.cmp(&b.id));
-    let show_title = rows.iter().any(|r| r.title.is_some());
-
-    if show_title {
-        eprintln!(
-            "REQUEST     SOURCE        TARGET       TITLE                      AGE         RESPONSE"
-        );
-        eprintln!(
-            "----------  ------------  -----------  -------------------------  ----------  --------"
-        );
-        for r in &rows {
-            eprintln!(
-                "{:<10}  {:<12}  {:<11}  {:<25}  {:<10}  {}",
-                r.id,
-                r.source,
-                r.target,
-                r.title.as_deref().unwrap_or("-"),
-                r.age,
-                r.response
-            );
-        }
-    } else {
-        eprintln!("REQUEST     SOURCE        TARGET       AGE         RESPONSE");
-        eprintln!("----------  ------------  -----------  ----------  --------");
-        for r in &rows {
-            eprintln!(
-                "{:<10}  {:<12}  {:<11}  {:<10}  {}",
-                r.id, r.source, r.target, r.age, r.response
-            );
+    if let Ok(my_pane) = std::env::var("TMUX_PANE") {
+        match tmux::list_panes(&my_pane) {
+            Ok(panes) => {
+                eprintln!();
+                eprintln!("PANE       AGENT    STATE    CONTEXT            ACTIVITY");
+                eprintln!(
+                    "---------  -------  -------  -----------------  ----------------------------------------"
+                );
+                for p in panes {
+                    let capture = tmux::capture_pane(&p.id).unwrap_or_default();
+                    let parsed = pane::parse_pane_content(&capture);
+                    let agent = match parsed.agent_type {
+                        Some(pane::AgentType::Claude) => "Claude",
+                        Some(pane::AgentType::Codex) => "Codex",
+                        None => "Unknown",
+                    };
+                    let state = match parsed.state {
+                        pane::AgentState::Working => "Working",
+                        pane::AgentState::Idle => "Idle",
+                        pane::AgentState::Unknown => "Unknown",
+                    };
+                    let context = parsed.context_remaining.unwrap_or_else(|| "-".to_string());
+                    let activity = parsed
+                        .activity
+                        .map(|value| value.replace('\n', " "))
+                        .unwrap_or_else(|| "-".to_string());
+                    eprintln!(
+                        "{:<9}  {:<7}  {:<7}  {:<17}  {}",
+                        p.id, agent, state, context, activity
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!();
+                eprintln!("(pane parser unavailable: {e})");
+            }
         }
     }
 

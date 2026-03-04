@@ -15,6 +15,7 @@ use tracing::{error, info, warn};
 
 const STALENESS_SAMPLE_INTERVAL: Duration = Duration::from_secs(30);
 const STALENESS_NOTIFY_AFTER_UNCHANGED: u32 = 4;
+const IDLE_NUDGE_AFTER: Duration = Duration::from_secs(60);
 const IDLE_NOTIFY_DELAY: Duration = Duration::from_secs(30);
 
 struct Request {
@@ -28,6 +29,8 @@ struct PaneState {
     last_content: String,
     unchanged_count: u32,
     notified: bool,
+    idle_since: Option<Instant>,
+    idle_nudged: bool,
 }
 
 struct IdleState {
@@ -588,7 +591,47 @@ async fn run_staleness_checks(
                 last_content: pane_content.clone(),
                 unchanged_count: 0,
                 notified: false,
+                idle_since: None,
+                idle_nudged: false,
             });
+
+            if matches!(parsed_pane_state.state, pane::AgentState::Idle) {
+                if state.idle_since.is_none() {
+                    state.idle_since = Some(Instant::now());
+                }
+            } else {
+                state.idle_since = None;
+            }
+
+            if !state.idle_nudged
+                && let Some(idle_since) = state.idle_since
+                && idle_since.elapsed() >= IDLE_NUDGE_AFTER
+            {
+                let buddy_reminder = format!(
+                    "⚠️ You have an open task (ID: {request_id}) but appear to be idle.\nPlease respond when done:\n\ncat <<'EOF' | bud respond {request_id}\n<summary of what you did>\nEOF"
+                );
+                match tmux::send_to_pane(&meta.target_pane, &buddy_reminder) {
+                    Ok(()) => {
+                        state.idle_nudged = true;
+                        let captain_notice = format!(
+                            "Buddy appears idle on task {request_id} without responding. Sent a reminder."
+                        );
+                        if let Err(e) = tmux::send_to_pane(&meta.source_pane, &captain_notice) {
+                            error!(
+                                "failed to notify captain pane {} after idle nudge for request {}: {e}",
+                                meta.source_pane, request_id
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            "failed to send idle nudge to buddy pane {} for request {}: {e}",
+                            meta.target_pane, request_id
+                        );
+                    }
+                }
+            }
+
             if pane_content == state.last_content {
                 state.unchanged_count += 1;
             } else {

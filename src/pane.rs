@@ -55,14 +55,29 @@ pub fn parse_pane_content(text: &str) -> PaneState {
 }
 
 fn parse_codex(lines: &[&str]) -> Option<PaneState> {
-    let status = lines
-        .iter()
-        .rev()
-        .find_map(|line| parse_codex_status_line(line))?;
     let has_prompt = lines.iter().any(|line| line.trim_start().starts_with('›'));
+    if !has_prompt {
+        return None;
+    }
+
     let has_working = lines
         .iter()
         .any(|line| line.contains("Working (") && line.contains(')'));
+    let model = lines
+        .iter()
+        .rev()
+        .find_map(|line| parse_codex_status_line(line));
+    let context_remaining = lines
+        .iter()
+        .rev()
+        .find_map(|line| extract_codex_context(line));
+    let has_codex_ui_marker = lines.iter().any(|line| {
+        line.contains("OpenAI Codex")
+            || line.contains("Run /review")
+            || line.contains("/statusline")
+            || line.contains("context left")
+            || line.contains("gpt-")
+    });
 
     if has_working {
         let activity = lines
@@ -74,23 +89,23 @@ fn parse_codex(lines: &[&str]) -> Option<PaneState> {
         return Some(PaneState {
             agent_type: Some(AgentType::Codex),
             state: AgentState::Working,
-            model: Some(status.model),
-            context_remaining: Some(status.context_remaining),
+            model,
+            context_remaining,
             activity,
         });
     }
 
-    if has_prompt {
-        return Some(PaneState {
-            agent_type: Some(AgentType::Codex),
-            state: AgentState::Idle,
-            model: Some(status.model),
-            context_remaining: Some(status.context_remaining),
-            activity: None,
-        });
+    if !has_codex_ui_marker && model.is_none() && context_remaining.is_none() {
+        return None;
     }
 
-    None
+    Some(PaneState {
+        agent_type: Some(AgentType::Codex),
+        state: AgentState::Idle,
+        model,
+        context_remaining,
+        activity: None,
+    })
 }
 
 fn parse_claude(lines: &[&str]) -> Option<PaneState> {
@@ -98,9 +113,9 @@ fn parse_claude(lines: &[&str]) -> Option<PaneState> {
         let trimmed = line.trim();
         trimmed == "❯" || trimmed.starts_with("❯ ")
     });
-    let has_footer = lines
-        .iter()
-        .any(|line| line.contains("bypass permissions") || line.contains("shift+tab to cycle"));
+    if !has_prompt {
+        return None;
+    }
 
     let spinner_line = lines
         .iter()
@@ -116,32 +131,26 @@ fn parse_claude(lines: &[&str]) -> Option<PaneState> {
         });
     }
 
-    if has_prompt && has_footer {
-        return Some(PaneState {
-            agent_type: Some(AgentType::Claude),
-            state: AgentState::Idle,
-            model: None,
-            context_remaining: extract_tokens_phrase(lines),
-            activity: None,
-        });
-    }
-
-    None
+    Some(PaneState {
+        agent_type: Some(AgentType::Claude),
+        state: AgentState::Idle,
+        model: None,
+        context_remaining: extract_tokens_phrase(lines),
+        activity: None,
+    })
 }
 
-struct CodexStatus {
-    model: String,
-    context_remaining: String,
-}
-
-fn parse_codex_status_line(line: &str) -> Option<CodexStatus> {
+fn parse_codex_status_line(line: &str) -> Option<String> {
     let trimmed = line.trim();
     if !trimmed.contains("gpt-") {
         return None;
     }
     let model_start = trimmed.find("gpt-")?;
-    let context_remaining = extract_codex_context(trimmed)?;
-    let context_start = trimmed.find(&context_remaining).unwrap_or(trimmed.len());
+    let context = extract_codex_context(trimmed);
+    let context_start = context
+        .as_deref()
+        .and_then(|value| trimmed.find(value))
+        .unwrap_or(trimmed.len());
     let mut model = trimmed[model_start..context_start].trim().to_string();
     if model.ends_with('·') {
         model.pop();
@@ -151,10 +160,7 @@ fn parse_codex_status_line(line: &str) -> Option<CodexStatus> {
         return None;
     }
 
-    Some(CodexStatus {
-        model,
-        context_remaining,
-    })
+    Some(model)
 }
 
 fn extract_tokens_phrase(lines: &[&str]) -> Option<String> {
@@ -205,38 +211,37 @@ fn extract_codex_context(line: &str) -> Option<String> {
             return Some(format!("{percent}% left"));
         }
     }
-    extract_tokens_from_line(line)
+    if let Some(left_idx) = line.find("% context left") {
+        let prefix = &line[..left_idx];
+        let start = prefix
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| !ch.is_ascii_digit())
+            .map(|(idx, ch)| idx + ch.len_utf8())
+            .unwrap_or(0);
+        let percent = prefix[start..].trim();
+        if !percent.is_empty() {
+            return Some(format!("{percent}% context left"));
+        }
+    }
+    None
 }
 
 fn parse_claude_spinner_activity(line: &str) -> Option<String> {
+    const CLAUDE_SPINNER_CHARS: &[char] = &['·', '✢', '✳', '✶', '✻', '✽'];
     let trimmed = line.trim_start();
-    if !trimmed.contains('…') || !has_parenthesized_duration(trimmed) {
-        return None;
-    }
-
     let mut chars = trimmed.chars();
     let first = chars.next()?;
-    if first.is_ascii() || first.is_alphanumeric() {
+    if !CLAUDE_SPINNER_CHARS.contains(&first) {
         return None;
     }
     if chars.next()? != ' ' {
         return None;
     }
-
+    if !trimmed.contains('…') {
+        return None;
+    }
     Some(trimmed.to_string())
-}
-
-fn has_parenthesized_duration(line: &str) -> bool {
-    let start = match line.find('(') {
-        Some(idx) => idx,
-        None => return false,
-    };
-    let end = match line[start + 1..].find(')') {
-        Some(idx) => start + 1 + idx,
-        None => return false,
-    };
-    let inside = &line[start + 1..end];
-    inside.chars().any(|ch| ch.is_ascii_digit()) && inside.contains('s')
 }
 
 pub fn strip_ansi(text: &str) -> String {
