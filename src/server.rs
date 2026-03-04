@@ -385,20 +385,19 @@ async fn maybe_notify_idle(
         if let Some(last_title) = pending.last_title.as_deref() {
             message.push_str(&format!("\nLast completed: **{last_title}**"));
         }
-        if let Some(source_pane) = pending.source_pane.as_deref() {
+        let pane_capture = pending.source_pane.as_deref().and_then(|source_pane| {
             match tmux::capture_pane(source_pane) {
-                Ok(pane_capture) => {
-                    message.push_str(&format!("\n```\n{pane_capture}\n```"));
-                }
+                Ok(capture) => Some(capture),
                 Err(e) => {
                     warn!(
                         "failed to capture source pane {} for idle notification in session {}: {e}",
                         source_pane, pending.session_name
                     );
+                    None
                 }
             }
-        }
-        if let Err(e) = crate::discord::notify(webhook_url, &message).await {
+        });
+        if let Err(e) = crate::discord::notify(webhook_url, &message, pane_capture.as_deref()).await {
             error!(
                 "failed to send Discord idle notification for session {}: {e}",
                 pending.session_name
