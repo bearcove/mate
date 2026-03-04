@@ -326,6 +326,7 @@ async fn client_assign(
         Ok(request_id) => {
             eprintln!("{}", warmth::assigned());
             eprintln!("Request ID: {request_id}");
+            print_request_followup_help(&request_id);
             Ok(())
         }
         Err(first_error) => {
@@ -346,9 +347,32 @@ async fn client_assign(
             })?;
             eprintln!("{}", warmth::assigned());
             eprintln!("Request ID: {request_id}");
+            print_request_followup_help(&request_id);
             Ok(())
         }
     }
+}
+
+fn print_request_followup_help(request_id: &str) {
+    eprintln!();
+    eprintln!("What's next:");
+    eprintln!(
+        "  bud spy {request_id}                         - peek at what your buddy's pane looks like right now"
+    );
+    eprintln!(
+        "  bud wait {request_id}                        - block until your buddy responds (90s default)"
+    );
+    eprintln!(
+        "  bud wait {request_id} --timeout 300          - block with custom timeout"
+    );
+    eprintln!("  bud list                                 - see all in-flight requests and their status");
+    eprintln!(
+        "  cat <<'EOF' | bud steer {request_id}         - send a mid-task clarification or course correction"
+    );
+    eprintln!(
+        "  cat <<'EOF' | bud update {request_id}        - (buddy uses this) send a progress update without completing"
+    );
+    eprintln!("  bud cancel {request_id}                      - cancel the task entirely");
 }
 
 async fn assign_once(
@@ -418,6 +442,7 @@ fn steer_request(request_id: &str) -> Result<()> {
         "Sent steer update for task {request_id} to pane {}.",
         meta.target_pane
     );
+    print_request_followup_help(request_id);
     Ok(())
 }
 
