@@ -104,6 +104,10 @@ impl crate::protocol::Coop for CoopServer {
         let message = format!(
             "{}\n\n\
              {task_content}\n\n\
+             If you hit a decision point, want to share progress, or need clarification, send an update:\n\n\
+             cat <<'BUDEOF' | bud update {request_id}\n\
+             <your progress update here>\n\
+             BUDEOF\n\n\
              IMPORTANT: When you're done, you MUST send your response by executing \
              this shell command (use your Bash/shell tool — do NOT just print it as text):\n\n\
              cat <<'BUDEOF' | bud respond {request_id}\n\
