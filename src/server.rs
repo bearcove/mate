@@ -1,3 +1,4 @@
+use crate::pane;
 use crate::protocol::{CoopClient, CoopDispatcher};
 use crate::tmux;
 use eyre::Result;
@@ -36,6 +37,7 @@ struct IdleState {
     source_pane: Option<String>,
     last_pane_content: Option<String>,
     pane_unchanged_since: Option<Instant>,
+    parsed_pane_state: Option<pane::PaneState>,
 }
 
 #[derive(Clone)]
@@ -106,6 +108,7 @@ impl crate::protocol::Coop for CoopServer {
                     source_pane: None,
                     last_pane_content: None,
                     pane_unchanged_since: None,
+                    parsed_pane_state: None,
                 });
             state.empty_since = None;
             state.notified = false;
@@ -113,6 +116,7 @@ impl crate::protocol::Coop for CoopServer {
             state.source_pane = None;
             state.last_pane_content = None;
             state.pane_unchanged_since = None;
+            state.parsed_pane_state = None;
         }
 
         let request_path = self.request_root_dir.join(&session_name).join(&request_id);
@@ -300,7 +304,12 @@ async fn watch_responses(
         if watcher.is_some() {
             tokio::select! {
                 _ = staleness_tick.tick() => {
-                    run_staleness_checks(&request_root_dir, &response_root_dir, &mut pane_states);
+                    run_staleness_checks(
+                        &request_root_dir,
+                        &response_root_dir,
+                        &idle_states,
+                        &mut pane_states,
+                    ).await;
                     maybe_notify_idle(&idle_states, discord_webhook_url.as_deref()).await;
                 }
                 maybe_event = event_rx.recv() => {
@@ -329,7 +338,12 @@ async fn watch_responses(
         } else {
             tokio::select! {
                 _ = staleness_tick.tick() => {
-                    run_staleness_checks(&request_root_dir, &response_root_dir, &mut pane_states);
+                    run_staleness_checks(
+                        &request_root_dir,
+                        &response_root_dir,
+                        &idle_states,
+                        &mut pane_states,
+                    ).await;
                     maybe_notify_idle(&idle_states, discord_webhook_url.as_deref()).await;
                 }
                 _ = poll_tick.tick() => {
@@ -470,9 +484,10 @@ async fn maybe_notify_idle(
     }
 }
 
-fn run_staleness_checks(
+async fn run_staleness_checks(
     request_root_dir: &Path,
     response_root_dir: &Path,
+    idle_states: &Arc<Mutex<HashMap<String, IdleState>>>,
     pane_states: &mut HashMap<String, PaneState>,
 ) {
     let mut active_request_keys: HashSet<String> = HashSet::new();
@@ -536,6 +551,38 @@ fn run_staleness_checks(
                     continue;
                 }
             };
+            let parsed_pane_state = pane::parse_pane_content(&pane_content);
+            {
+                let mut states = idle_states.lock().await;
+                let state = states.entry(session_name.clone()).or_insert(IdleState {
+                    empty_since: None,
+                    notified: false,
+                    last_title: None,
+                    source_pane: None,
+                    last_pane_content: None,
+                    pane_unchanged_since: None,
+                    parsed_pane_state: None,
+                });
+                state.parsed_pane_state = Some(parsed_pane_state.clone());
+            }
+
+            if matches!(parsed_pane_state.state, pane::AgentState::Unknown) {
+                let unparsed = pane_content
+                    .lines()
+                    .rev()
+                    .take(20)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                warn!(
+                    "UNPARSED_PANE: session={} request={} pane={}\n{}",
+                    session_name, request_id, meta.target_pane, unparsed
+                );
+            } else if matches!(parsed_pane_state.state, pane::AgentState::Idle) {
+                info!("Buddy appears idle on task {request_id} without responding");
+            }
 
             let state = pane_states.entry(key).or_insert_with(|| PaneState {
                 last_content: pane_content.clone(),
@@ -731,6 +778,7 @@ async fn process_response_files(
                     source_pane: None,
                     last_pane_content: None,
                     pane_unchanged_since: None,
+                    parsed_pane_state: None,
                 });
                 state.empty_since = Some(Instant::now());
                 state.notified = false;
@@ -738,6 +786,7 @@ async fn process_response_files(
                 state.source_pane = Some(source_pane.clone());
                 state.last_pane_content = None;
                 state.pane_unchanged_since = None;
+                state.parsed_pane_state = None;
             }
         }
     }

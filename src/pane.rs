@@ -35,7 +35,8 @@ impl Default for PaneState {
 }
 
 pub fn parse_pane_content(text: &str) -> PaneState {
-    let lines: Vec<&str> = text.lines().collect();
+    let cleaned = strip_ansi(text);
+    let lines: Vec<&str> = cleaned.lines().collect();
     if lines.is_empty() {
         return PaneState::default();
     }
@@ -61,7 +62,7 @@ fn parse_codex(lines: &[&str]) -> Option<PaneState> {
     let has_prompt = lines.iter().any(|line| line.trim_start().starts_with('›'));
     let has_working = lines
         .iter()
-        .any(|line| line.contains("Working (") && line.contains("esc to interrupt"));
+        .any(|line| line.contains("Working (") && line.contains(')'));
 
     if has_working {
         let activity = lines
@@ -101,26 +102,17 @@ fn parse_claude(lines: &[&str]) -> Option<PaneState> {
         .iter()
         .any(|line| line.contains("bypass permissions") || line.contains("shift+tab to cycle"));
 
-    let spinner_line = lines.iter().rev().find_map(|line| {
-        let trimmed = line.trim_start();
-        trimmed
-            .strip_prefix("✻ ")
-            .or_else(|| trimmed.strip_prefix("⏺ "))
-    });
-    let has_running = lines.iter().any(|line| line.contains("Running…"));
-    let spinner_has_tokens = spinner_line
-        .map(|line| line.contains("↓") && line.contains("tokens"))
-        .unwrap_or(false);
-
-    if let Some(activity_line) = spinner_line
-        && (has_running || spinner_has_tokens)
-    {
+    let spinner_line = lines
+        .iter()
+        .rev()
+        .find_map(|line| parse_claude_spinner_activity(line));
+    if let Some(activity_line) = spinner_line {
         return Some(PaneState {
             agent_type: Some(AgentType::Claude),
             state: AgentState::Working,
             model: None,
             context_remaining: extract_tokens_phrase(lines),
-            activity: Some(activity_line.trim().to_string()),
+            activity: Some(activity_line),
         });
     }
 
@@ -144,31 +136,32 @@ struct CodexStatus {
 
 fn parse_codex_status_line(line: &str) -> Option<CodexStatus> {
     let trimmed = line.trim();
-    if !trimmed.contains("gpt-") || !trimmed.contains('·') {
+    if !trimmed.contains("gpt-") {
         return None;
     }
-
-    let parts: Vec<&str> = trimmed.split('·').map(str::trim).collect();
-    if parts.len() < 2 {
-        return None;
+    let model_start = trimmed.find("gpt-")?;
+    let context_remaining = extract_codex_context(trimmed)?;
+    let context_start = trimmed.find(&context_remaining).unwrap_or(trimmed.len());
+    let mut model = trimmed[model_start..context_start].trim().to_string();
+    if model.ends_with('·') {
+        model.pop();
+        model = model.trim().to_string();
     }
-    if !parts[1].contains("% left") && !parts[1].contains("tokens") {
-        return None;
-    }
-
-    let model = parts[0];
     if model.is_empty() {
         return None;
     }
 
     Some(CodexStatus {
-        model: model.to_string(),
-        context_remaining: parts[1].to_string(),
+        model,
+        context_remaining,
     })
 }
 
 fn extract_tokens_phrase(lines: &[&str]) -> Option<String> {
-    lines.iter().rev().find_map(|line| extract_tokens_from_line(line))
+    lines
+        .iter()
+        .rev()
+        .find_map(|line| extract_tokens_from_line(line))
 }
 
 fn extract_tokens_from_line(line: &str) -> Option<String> {
@@ -196,4 +189,82 @@ fn extract_tokens_from_line(line: &str) -> Option<String> {
     }
 
     None
+}
+
+fn extract_codex_context(line: &str) -> Option<String> {
+    if let Some(left_idx) = line.find("% left") {
+        let prefix = &line[..left_idx];
+        let start = prefix
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| !ch.is_ascii_digit())
+            .map(|(idx, ch)| idx + ch.len_utf8())
+            .unwrap_or(0);
+        let percent = prefix[start..].trim();
+        if !percent.is_empty() {
+            return Some(format!("{percent}% left"));
+        }
+    }
+    extract_tokens_from_line(line)
+}
+
+fn parse_claude_spinner_activity(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    if !trimmed.contains('…') || !has_parenthesized_duration(trimmed) {
+        return None;
+    }
+
+    let mut chars = trimmed.chars();
+    let first = chars.next()?;
+    if first.is_ascii() || first.is_alphanumeric() {
+        return None;
+    }
+    if chars.next()? != ' ' {
+        return None;
+    }
+
+    Some(trimmed.to_string())
+}
+
+fn has_parenthesized_duration(line: &str) -> bool {
+    let start = match line.find('(') {
+        Some(idx) => idx,
+        None => return false,
+    };
+    let end = match line[start + 1..].find(')') {
+        Some(idx) => start + 1 + idx,
+        None => return false,
+    };
+    let inside = &line[start + 1..end];
+    inside.chars().any(|ch| ch.is_ascii_digit()) && inside.contains('s')
+}
+
+pub fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if matches!(chars.peek(), Some('[')) {
+                chars.next();
+                for next in chars.by_ref() {
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if ch == '\n' {
+            out.push(ch);
+            continue;
+        }
+
+        if ch.is_control() {
+            continue;
+        }
+
+        out.push(ch);
+    }
+    out
 }

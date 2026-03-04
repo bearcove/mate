@@ -363,10 +363,10 @@ fn print_request_followup_help(request_id: &str) {
     eprintln!(
         "  bud wait {request_id}                        - block until your buddy responds (90s default)"
     );
+    eprintln!("  bud wait {request_id} --timeout 300          - block with custom timeout");
     eprintln!(
-        "  bud wait {request_id} --timeout 300          - block with custom timeout"
+        "  bud list                                 - see all in-flight requests and their status"
     );
-    eprintln!("  bud list                                 - see all in-flight requests and their status");
     eprintln!(
         "  cat <<'EOF' | bud steer {request_id}         - send a mid-task clarification or course correction"
     );
@@ -893,7 +893,6 @@ fn process_pending_issue_drafts(
 
     Ok((created, failed))
 }
-
 
 fn move_file(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
     if to.exists() {
