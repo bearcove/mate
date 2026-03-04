@@ -58,7 +58,7 @@ fn wait_for_paste(pane_id: &str, marker: &str) -> Result<()> {
     for _ in 0..100 {
         let content = capture_pane(pane_id)?;
         if content.contains(marker)
-            || content.contains("[Pasted text '")
+            || content.contains("[Pasted text ")
             || content.contains("[Pasted Content ")
         {
             return Ok(());
