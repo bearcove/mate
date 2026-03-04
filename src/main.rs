@@ -136,14 +136,14 @@ async fn main() -> Result<()> {
 
 async fn ensure_server_running() -> Result<()> {
     let pid_file = pid_path();
-    if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            let status = std::process::Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .status();
-            if status.is_ok_and(|s| s.success()) {
-                return Ok(());
-            }
+    if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+        && let Ok(pid) = pid_str.trim().parse::<u32>()
+    {
+        let status = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status();
+        if status.is_ok_and(|s| s.success()) {
+            return Ok(());
         }
     }
 

@@ -81,13 +81,13 @@ impl crate::protocol::Coop for CoopServer {
         if let Err(e) = tmux::send_to_pane(&target.id, &message) {
             error!("failed to send to pane {}: {e}", target.id);
             self.requests.lock().await.remove(&request_id);
-            if let Err(remove_err) = std::fs::remove_file(&request_path) {
-                if remove_err.kind() != std::io::ErrorKind::NotFound {
-                    error!(
-                        "failed to remove request file {}: {remove_err}",
-                        request_path.display()
-                    );
-                }
+            if let Err(remove_err) = std::fs::remove_file(&request_path)
+                && remove_err.kind() != std::io::ErrorKind::NotFound
+            {
+                error!(
+                    "failed to remove request file {}: {remove_err}",
+                    request_path.display()
+                );
             }
             return Err(format!("failed to send to pane {}: {e}", target.id));
         }
@@ -211,15 +211,15 @@ async fn watch_responses(
                 continue;
             }
 
-            if let Err(e) = std::fs::remove_file(&request_path) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    error!("failed to remove request file {}: {e}", request_path.display());
-                }
+            if let Err(e) = std::fs::remove_file(&request_path)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                error!("failed to remove request file {}: {e}", request_path.display());
             }
-            if let Err(e) = std::fs::remove_file(&path) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    error!("failed to remove response file {}: {e}", path.display());
-                }
+            if let Err(e) = std::fs::remove_file(&path)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                error!("failed to remove response file {}: {e}", path.display());
             }
 
             info!("delivered response for request {request_id}");

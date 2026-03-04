@@ -102,17 +102,17 @@ const DELIVERED: &[&str] = &[
 ];
 
 pub fn assigned() -> &'static str {
-    pick(&ASSIGNED)
+    pick(ASSIGNED)
 }
 
 pub fn greeting() -> &'static str {
-    pick(&GREETING)
+    pick(GREETING)
 }
 
 pub fn responded() -> &'static str {
-    pick(&RESPONDED)
+    pick(RESPONDED)
 }
 
 pub fn delivered() -> &'static str {
-    pick(&DELIVERED)
+    pick(DELIVERED)
 }

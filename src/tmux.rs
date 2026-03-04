@@ -16,8 +16,6 @@ fn generate_marker() -> String {
 pub struct Pane {
     pub id: String,
     pub pid: u32,
-    pub title: String,
-    pub command: String,
 }
 
 /// List tmux panes in the same session as the given pane.
@@ -37,7 +35,7 @@ pub fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
             "-t", &session_id,
             "-s",
             "-F",
-            "#{pane_id}\t#{pane_pid}\t#{pane_title}\t#{pane_current_command}",
+            "#{pane_id}\t#{pane_pid}",
         ])
         .output()?;
 
@@ -49,17 +47,10 @@ pub fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
     let panes = stdout
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(4, '\t');
+            let mut parts = line.splitn(2, '\t');
             let id = parts.next()?.to_string();
             let pid = parts.next()?.parse().ok()?;
-            let title = parts.next()?.to_string();
-            let command = parts.next()?.to_string();
-            Some(Pane {
-                id,
-                pid,
-                title,
-                command,
-            })
+            Some(Pane { id, pid })
         })
         .collect();
 
