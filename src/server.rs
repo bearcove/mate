@@ -1,6 +1,5 @@
 use crate::protocol::{CoopClient, CoopDispatcher};
 use crate::tmux;
-use crate::{github, tmux::send_to_pane};
 use eyre::Result;
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use roam_stream::StreamLink;
@@ -16,7 +15,6 @@ use tracing::{error, info, warn};
 const STALENESS_SAMPLE_INTERVAL: Duration = Duration::from_secs(30);
 const STALENESS_NOTIFY_AFTER_UNCHANGED: u32 = 4;
 const IDLE_NOTIFY_DELAY: Duration = Duration::from_secs(30);
-const ISSUE_SCAN_INTERVAL: Duration = Duration::from_secs(3);
 
 struct Request {
     session_name: String,
@@ -296,7 +294,6 @@ async fn watch_responses(
 
     let mut staleness_tick = tokio::time::interval(STALENESS_SAMPLE_INTERVAL);
     let mut poll_tick = tokio::time::interval(Duration::from_secs(2));
-    let mut issue_tick = tokio::time::interval(ISSUE_SCAN_INTERVAL);
 
     loop {
         if watcher.is_some() {
@@ -304,9 +301,6 @@ async fn watch_responses(
                 _ = staleness_tick.tick() => {
                     run_staleness_checks(&request_root_dir, &response_root_dir, &mut pane_states);
                     maybe_notify_idle(&idle_states, discord_webhook_url.as_deref()).await;
-                }
-                _ = issue_tick.tick() => {
-                    process_new_issue_files();
                 }
                 maybe_event = event_rx.recv() => {
                     match maybe_event {
@@ -337,9 +331,6 @@ async fn watch_responses(
                     run_staleness_checks(&request_root_dir, &response_root_dir, &mut pane_states);
                     maybe_notify_idle(&idle_states, discord_webhook_url.as_deref()).await;
                 }
-                _ = issue_tick.tick() => {
-                    process_new_issue_files();
-                }
                 _ = poll_tick.tick() => {
                     process_response_files(
                         &response_root_dir,
@@ -353,215 +344,6 @@ async fn watch_responses(
             }
         }
     }
-}
-
-fn process_new_issue_files() {
-    let root = Path::new("/tmp/bud-issues");
-    let owner_entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-
-    for owner_entry in owner_entries.flatten() {
-        let owner_path = owner_entry.path();
-        let owner = match owner_entry.file_name().into_string() {
-            Ok(name) => name,
-            Err(_) => continue,
-        };
-        if !owner_path.is_dir() {
-            continue;
-        }
-
-        let repo_entries = match std::fs::read_dir(&owner_path) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        for repo_entry in repo_entries.flatten() {
-            let repo_path = repo_entry.path();
-            let repo_name = match repo_entry.file_name().into_string() {
-                Ok(name) => name,
-                Err(_) => continue,
-            };
-            if !repo_path.is_dir() {
-                continue;
-            }
-
-            let repo = format!("{owner}/{repo_name}");
-            let new_dir = repo_path.join("new");
-            if !new_dir.is_dir() {
-                continue;
-            }
-
-            let created_dir = repo_path.join("created");
-            let failed_dir = repo_path.join("failed");
-            if let Err(e) = std::fs::create_dir_all(&created_dir) {
-                error!(
-                    "failed to create created dir {} for repo {}: {e}",
-                    created_dir.display(),
-                    repo
-                );
-                continue;
-            }
-            if let Err(e) = std::fs::create_dir_all(&failed_dir) {
-                error!(
-                    "failed to create failed dir {} for repo {}: {e}",
-                    failed_dir.display(),
-                    repo
-                );
-                continue;
-            }
-
-            let pane = std::fs::read_to_string(repo_path.join(".pane"))
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-
-            let mut drafts: Vec<std::fs::DirEntry> = match std::fs::read_dir(&new_dir) {
-                Ok(entries) => entries
-                    .flatten()
-                    .filter(|entry| entry.file_type().is_ok_and(|ft| ft.is_file()))
-                    .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "md"))
-                    .filter(|entry| entry.file_name().to_string_lossy() != "TEMPLATE.md")
-                    .collect(),
-                Err(_) => continue,
-            };
-            drafts.sort_by_key(|entry| entry.file_name().to_string_lossy().to_string());
-            if drafts.is_empty() {
-                continue;
-            }
-
-            let mut existing_labels = match github::sync_labels_set(&repo) {
-                Ok(labels) => labels,
-                Err(e) => {
-                    error!("failed to sync labels for {}: {e}", repo);
-                    continue;
-                }
-            };
-            let mut existing_milestones = match github::sync_milestones_set(&repo) {
-                Ok(milestones) => milestones,
-                Err(e) => {
-                    error!("failed to sync milestones for {}: {e}", repo);
-                    continue;
-                }
-            };
-
-            for draft_entry in drafts {
-                let path = draft_entry.path();
-                let original_name = draft_entry.file_name().to_string_lossy().to_string();
-                let content = match std::fs::read_to_string(&path) {
-                    Ok(content) => content,
-                    Err(e) => {
-                        if let Err(move_err) = move_file_overwrite(&path, &failed_dir.join(&original_name)) {
-                            error!("failed to move unreadable draft {} to failed dir: {move_err}", path.display());
-                        }
-                        notify_issue_result(
-                            pane.as_deref(),
-                            &format!("Failed {} in {repo}: read failed: {e}", original_name),
-                        );
-                        continue;
-                    }
-                };
-
-                let draft = match github::parse_new_issue(&content) {
-                    Ok(issue) => issue,
-                    Err(e) => {
-                        if let Err(move_err) = move_file_overwrite(&path, &failed_dir.join(&original_name)) {
-                            error!("failed to move invalid draft {} to failed dir: {move_err}", path.display());
-                        }
-                        notify_issue_result(
-                            pane.as_deref(),
-                            &format!("Failed {} in {repo}: parse failed: {e}", original_name),
-                        );
-                        continue;
-                    }
-                };
-
-                let mut prep_error: Option<String> = None;
-                for label in &draft.labels {
-                    if existing_labels.contains(label) {
-                        continue;
-                    }
-                    if let Err(e) = github::ensure_label_exists(&repo, label) {
-                        prep_error = Some(format!("label '{label}' creation failed: {e}"));
-                        break;
-                    }
-                    existing_labels.insert(label.clone());
-                }
-                if prep_error.is_none()
-                    && let Some(milestone) = draft.milestone.as_deref()
-                    && !existing_milestones.contains(milestone)
-                {
-                    if let Err(e) = github::ensure_milestone_exists(&repo, milestone) {
-                        prep_error = Some(format!("milestone '{milestone}' creation failed: {e}"));
-                    } else {
-                        existing_milestones.insert(milestone.to_string());
-                    }
-                }
-                if let Some(error_message) = prep_error {
-                    if let Err(move_err) = move_file_overwrite(&path, &failed_dir.join(&original_name)) {
-                        error!("failed to move draft {} to failed dir: {move_err}", path.display());
-                    }
-                    notify_issue_result(
-                        pane.as_deref(),
-                        &format!("Failed {} in {repo}: {error_message}", original_name),
-                    );
-                    continue;
-                }
-
-                match github::create_issue(&repo, &draft) {
-                    Ok((number, url)) => {
-                        let filename = github::issue_filename_for_number_title(number, &draft.title);
-                        if let Err(move_err) =
-                            move_file_overwrite(&path, &created_dir.join(&filename))
-                        {
-                            error!(
-                                "created issue #{} for {} but failed moving draft {}: {move_err}",
-                                number,
-                                repo,
-                                path.display()
-                            );
-                        }
-                        notify_issue_result(
-                            pane.as_deref(),
-                            &format!(
-                                "Created issue #{number}: {}\n{url}\n({repo})",
-                                draft.title
-                            ),
-                        );
-                    }
-                    Err(e) => {
-                        if let Err(move_err) =
-                            move_file_overwrite(&path, &failed_dir.join(&original_name))
-                        {
-                            error!("failed to move draft {} to failed dir: {move_err}", path.display());
-                        }
-                        notify_issue_result(
-                            pane.as_deref(),
-                            &format!("Failed {} in {repo}: create failed: {e}", original_name),
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn notify_issue_result(pane: Option<&str>, message: &str) {
-    if let Some(pane) = pane {
-        if let Err(e) = send_to_pane(pane, message) {
-            warn!("failed to send issue watcher result to pane {}: {e}", pane);
-        }
-    } else {
-        warn!("no .pane target found for issue watcher result: {message}");
-    }
-}
-
-fn move_file_overwrite(from: &Path, to: &Path) -> Result<()> {
-    if to.exists() {
-        std::fs::remove_file(to)?;
-    }
-    std::fs::rename(from, to)?;
-    Ok(())
 }
 
 async fn maybe_notify_idle(

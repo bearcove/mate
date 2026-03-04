@@ -88,6 +88,11 @@ pub fn send_to_pane(pane_id: &str, text: &str) -> Result<()> {
     let marker = generate_marker();
     let tagged = format!("{marker} {text}");
 
+    // Exit copy mode if active (q), then clean up the stray 'q' (BSpace)
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", pane_id, "q", "BSpace"])
+        .status();
+
     // Clear any existing input (C-u kills the line without interrupting the process)
     let status = Command::new("tmux")
         .args(["send-keys", "-t", pane_id, "C-u"])

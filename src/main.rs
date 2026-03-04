@@ -562,11 +562,37 @@ fn sync_issues_to_pane() -> Result<()> {
     let repo = github::infer_repo()?;
     eprintln!("Syncing issues for {repo} — sit tight, I'll deliver them to your pane when ready.");
 
+    let (created, failed) = process_pending_issue_drafts(&repo)?;
+
     let issues = github::sync_issues(&repo)?;
     let result = github::write_issue_files(&repo, &issues)?;
-    std::fs::write(result.base_dir.join(".pane"), &pane)?;
 
-    let mut summary = format!(
+    let mut summary = String::new();
+    if !created.is_empty() {
+        summary.push_str(&format!("Created {} new issues:\n", created.len()));
+        for pending in &created {
+            summary.push_str(&format!(
+                "  #{number}: {title} — {url}\n",
+                number = pending.number,
+                title = pending.title,
+                url = pending.url
+            ));
+        }
+        summary.push('\n');
+    }
+
+    for failure in &failed {
+        summary.push_str(&format!(
+            "Failed to create {}: {}\n",
+            failure.filename,
+            failure.error
+        ));
+    }
+    if !failed.is_empty() {
+        summary.push('\n');
+    }
+
+    summary.push_str(&format!(
         "Issues synced for {repo} — {} open, {} closed.\n\n  Browse all:       ls {}/\n  Browse open:      ls {}/\n  Browse closed:    ls {}/\n  By created date:  ls {}/\n  By updated date:  ls {}/",
         result.open_count,
         result.closed_count,
@@ -575,7 +601,7 @@ fn sync_issues_to_pane() -> Result<()> {
         result.closed_dir.display(),
         result.by_created_dir.display(),
         result.by_updated_dir.display(),
-    );
+    ));
     if let Some(labels_dir) = result.labels_dir.as_ref() {
         summary.push_str(&format!("\n  Browse by label:  ls {}/", labels_dir.display()));
     }
@@ -589,7 +615,7 @@ fn sync_issues_to_pane() -> Result<()> {
         summary.push_str(&format!("\n  Browse deps:      ls {}/", deps_dir.display()));
     }
     summary.push_str(&format!(
-        "\n  Read the index:   cat {}\n  Read deps:        cat {}\n  Read labels:      cat {}\n  Read milestones:  cat {}\n  Read an issue:    cat {}/all/<filename>.md\n  Create an issue:  Write to {}/<name>.md (auto-created by server, or run: bud issue-create)\n\nPick an issue to work on, then assign it to your captain with: bud assign",
+        "\n  Read the index:   cat {}\n  Read deps:        cat {}\n  Read labels:      cat {}\n  Read milestones:  cat {}\n  Read an issue:    cat {}/all/<filename>.md\n  Create an issue:  Write to {}/<name>.md then run: bud issues\n\nPick an issue to work on, then assign it to your captain with: bud assign",
         result.index_path.display(),
         result.deps_markdown_path.display(),
         result.labels_markdown_path.display(),
@@ -600,6 +626,143 @@ fn sync_issues_to_pane() -> Result<()> {
     ));
     tmux::send_to_pane(&pane, &summary)?;
     Ok(())
+}
+
+struct PendingIssueCreated {
+    number: u64,
+    url: String,
+    title: String,
+}
+
+struct PendingIssueFailed {
+    filename: String,
+    error: String,
+}
+
+fn process_pending_issue_drafts(
+    repo: &str,
+) -> Result<(Vec<PendingIssueCreated>, Vec<PendingIssueFailed>)> {
+    let base_dir = github::issue_repo_dir(repo);
+    let new_dir = base_dir.join("new");
+    if !new_dir.is_dir() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let failed_dir = base_dir.join("failed");
+    std::fs::create_dir_all(&failed_dir)?;
+
+    let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(&new_dir)?
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|ft| ft.is_file()))
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "md"))
+        .filter(|entry| entry.file_name().to_string_lossy() != "TEMPLATE.md")
+        .collect();
+    entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_string());
+
+    if entries.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let mut existing_labels = github::sync_labels_set(repo)?;
+    let mut existing_milestones = github::sync_milestones_set(repo)?;
+    let mut created = Vec::new();
+    let mut failed = Vec::new();
+
+    for entry in entries {
+        let path = entry.path();
+        let original_name = entry.file_name().to_string_lossy().to_string();
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) => {
+                if let Err(move_err) = move_file(&path, &failed_dir.join(&original_name)) {
+                    eprintln!("Failed {original_name}: move_to_failed_failed: {move_err}");
+                }
+                failed.push(PendingIssueFailed {
+                    filename: original_name,
+                    error: format!("read failed: {e}"),
+                });
+                continue;
+            }
+        };
+
+        let draft = match github::parse_new_issue(&content) {
+            Ok(issue) => issue,
+            Err(e) => {
+                if let Err(move_err) = move_file(&path, &failed_dir.join(&original_name)) {
+                    eprintln!("Failed {original_name}: move_to_failed_failed: {move_err}");
+                }
+                failed.push(PendingIssueFailed {
+                    filename: original_name,
+                    error: format!("parse failed: {e}"),
+                });
+                continue;
+            }
+        };
+
+        let mut prep_error: Option<String> = None;
+        for label in &draft.labels {
+            if existing_labels.contains(label) {
+                continue;
+            }
+            if let Err(e) = github::ensure_label_exists(repo, label) {
+                prep_error = Some(format!("label '{label}' creation failed: {e}"));
+                break;
+            }
+            existing_labels.insert(label.clone());
+        }
+        if prep_error.is_none()
+            && let Some(milestone) = draft.milestone.as_deref()
+            && !existing_milestones.contains(milestone)
+        {
+            if let Err(e) = github::ensure_milestone_exists(repo, milestone) {
+                prep_error = Some(format!("milestone '{milestone}' creation failed: {e}"));
+            } else {
+                existing_milestones.insert(milestone.to_string());
+            }
+        }
+
+        if let Some(error_message) = prep_error {
+            if let Err(move_err) = move_file(&path, &failed_dir.join(&original_name)) {
+                eprintln!("Failed {original_name}: move_to_failed_failed: {move_err}");
+            }
+            failed.push(PendingIssueFailed {
+                filename: original_name,
+                error: error_message,
+            });
+            continue;
+        }
+
+        match github::create_issue(repo, &draft) {
+            Ok((number, url)) => {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    if let Err(move_err) = move_file(&path, &failed_dir.join(&original_name)) {
+                        eprintln!("Failed {original_name}: move_to_failed_failed: {move_err}");
+                    }
+                    failed.push(PendingIssueFailed {
+                        filename: original_name,
+                        error: format!("cleanup failed: {e}"),
+                    });
+                    continue;
+                }
+                created.push(PendingIssueCreated {
+                    number,
+                    url,
+                    title: draft.title,
+                });
+            }
+            Err(e) => {
+                if let Err(move_err) = move_file(&path, &failed_dir.join(&original_name)) {
+                    eprintln!("Failed {original_name}: move_to_failed_failed: {move_err}");
+                }
+                failed.push(PendingIssueFailed {
+                    filename: original_name,
+                    error: format!("create failed: {e}"),
+                });
+            }
+        }
+    }
+
+    Ok((created, failed))
 }
 
 fn issue_create_from_files() -> Result<()> {

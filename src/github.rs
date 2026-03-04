@@ -263,7 +263,31 @@ issue_{number}: repository(owner: "{owner}", name: "{name}") {{
 pub fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSyncResult> {
     let dir = issue_repo_dir(repo);
     if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
+        let sync_paths = [
+            "all",
+            "open",
+            "closed",
+            "by-created",
+            "by-updated",
+            "labels",
+            "milestones",
+            "deps",
+            "INDEX.md",
+            "DEPS.md",
+            "LABELS.md",
+            "MILESTONES.md",
+        ];
+        for path in sync_paths {
+            let path = dir.join(path);
+            if !path.exists() {
+                continue;
+            }
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path)?;
+            } else {
+                std::fs::remove_file(&path)?;
+            }
+        }
     }
 
     let all_dir = dir.join("all");
