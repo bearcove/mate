@@ -69,7 +69,12 @@ pub fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
 /// List all tmux panes across all sessions.
 pub fn list_all_panes() -> Result<Vec<Pane>> {
     let output = Command::new("tmux")
-        .args(["list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}\t#{session_name}"])
+        .args([
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id}\t#{pane_pid}\t#{session_name}",
+        ])
         .output()?;
     if !output.status.success() {
         return Err(eyre::eyre!("tmux list-panes -a failed"));

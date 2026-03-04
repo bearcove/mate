@@ -595,8 +595,12 @@ fn list_requests() -> Result<()> {
                 );
             }
         } else {
-            eprintln!("SESSION              REQUEST     SOURCE        TARGET       AGE         RESPONSE");
-            eprintln!("-------------------  ----------  ------------  -----------  ----------  --------");
+            eprintln!(
+                "SESSION              REQUEST     SOURCE        TARGET       AGE         RESPONSE"
+            );
+            eprintln!(
+                "-------------------  ----------  ------------  -----------  ----------  --------"
+            );
             for r in &rows {
                 eprintln!(
                     "{:<19}  {:<10}  {:<12}  {:<11}  {:<10}  {}",
@@ -643,7 +647,9 @@ fn list_requests() -> Result<()> {
             if agent_rows.is_empty() {
                 eprintln!("No agent panes detected.");
             } else {
-                eprintln!("SESSION              PANE       AGENT    STATE    CONTEXT            ACTIVITY");
+                eprintln!(
+                    "SESSION              PANE       AGENT    STATE    CONTEXT            ACTIVITY"
+                );
                 eprintln!(
                     "-------------------  ---------  -------  -------  -----------------  ----------------------------------------"
                 );
@@ -854,6 +860,8 @@ struct PendingIssueFailed {
 fn process_pending_issue_drafts(
     repo: &str,
 ) -> Result<(Vec<PendingIssueCreated>, Vec<PendingIssueFailed>)> {
+    use std::io::ErrorKind;
+
     let base_dir = github::issue_repo_dir(repo);
     let new_dir = base_dir.join("new");
     if !new_dir.is_dir() {
@@ -861,9 +869,9 @@ fn process_pending_issue_drafts(
     }
 
     let failed_dir = base_dir.join("failed");
-    std::fs::create_dir_all(&failed_dir)?;
+    fs_err::create_dir_all(&failed_dir)?;
 
-    let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(&new_dir)?
+    let mut entries: Vec<fs_err::DirEntry> = fs_err::read_dir(&new_dir)?
         .flatten()
         .filter(|entry| entry.file_type().is_ok_and(|ft| ft.is_file()))
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "md"))
@@ -883,15 +891,22 @@ fn process_pending_issue_drafts(
     for entry in entries {
         let path = entry.path();
         let original_name = entry.file_name().to_string_lossy().to_string();
-        let content = match std::fs::read_to_string(&path) {
+        let content = match fs_err::read_to_string(&path) {
             Ok(content) => content,
             Err(e) => {
+                if e.kind() == ErrorKind::NotFound {
+                    eprintln!(
+                        "Skipping draft {}: file disappeared before read (likely concurrent `bud issues` run).",
+                        path.display()
+                    );
+                    continue;
+                }
                 if let Err(move_err) = move_file(&path, &failed_dir.join(&original_name)) {
                     eprintln!("Failed {original_name}: move_to_failed_failed: {move_err}");
                 }
                 failed.push(PendingIssueFailed {
                     filename: original_name,
-                    error: format!("read failed: {e}"),
+                    error: format!("read failed at {}: {e}", path.display()),
                 });
                 continue;
             }
@@ -905,7 +920,7 @@ fn process_pending_issue_drafts(
                 }
                 failed.push(PendingIssueFailed {
                     filename: original_name,
-                    error: format!("parse failed: {e}"),
+                    error: format!("parse failed for {}: {e}", path.display()),
                 });
                 continue;
             }
@@ -946,15 +961,22 @@ fn process_pending_issue_drafts(
 
         match github::create_issue(repo, &draft) {
             Ok((number, url)) => {
-                if let Err(e) = std::fs::remove_file(&path) {
-                    if let Err(move_err) = move_file(&path, &failed_dir.join(&original_name)) {
-                        eprintln!("Failed {original_name}: move_to_failed_failed: {move_err}");
+                if let Err(e) = fs_err::remove_file(&path) {
+                    if e.kind() == ErrorKind::NotFound {
+                        eprintln!(
+                            "Draft {} already removed after create (likely concurrent run).",
+                            path.display()
+                        );
+                    } else {
+                        if let Err(move_err) = move_file(&path, &failed_dir.join(&original_name)) {
+                            eprintln!("Failed {original_name}: move_to_failed_failed: {move_err}");
+                        }
+                        failed.push(PendingIssueFailed {
+                            filename: original_name,
+                            error: format!("cleanup failed at {}: {e}", path.display()),
+                        });
+                        continue;
                     }
-                    failed.push(PendingIssueFailed {
-                        filename: original_name,
-                        error: format!("cleanup failed: {e}"),
-                    });
-                    continue;
                 }
                 created.push(PendingIssueCreated {
                     number,
@@ -968,7 +990,7 @@ fn process_pending_issue_drafts(
                 }
                 failed.push(PendingIssueFailed {
                     filename: original_name,
-                    error: format!("create failed: {e}"),
+                    error: format!("create failed for {}: {e}", path.display()),
                 });
             }
         }
@@ -978,9 +1000,16 @@ fn process_pending_issue_drafts(
 }
 
 fn move_file(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
+    use std::io::ErrorKind;
+
     if to.exists() {
-        std::fs::remove_file(to)?;
+        fs_err::remove_file(to)?;
     }
-    std::fs::rename(from, to)?;
+    if let Err(e) = fs_err::rename(from, to) {
+        if e.kind() == ErrorKind::NotFound {
+            return Ok(());
+        }
+        return Err(e.into());
+    }
     Ok(())
 }

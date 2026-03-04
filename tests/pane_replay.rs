@@ -1,4 +1,4 @@
-use bud::pane::{parse_pane_content, AgentState, AgentType, PaneState};
+use bud::pane::{AgentState, AgentType, PaneState, parse_pane_content};
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
@@ -34,15 +34,20 @@ struct ReplayStats {
 }
 
 fn replay_cast(path: &Path) -> (ReplayStats, Vec<ReplayFrame>) {
-    let content =
-        fs::read_to_string(path).unwrap_or_else(|e| panic!("failed reading {}: {e}", path.display()));
+    let content = fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("failed reading {}: {e}", path.display()));
     let mut lines = content.lines();
     let header_line = lines
         .next()
         .unwrap_or_else(|| panic!("missing header line in {}", path.display()));
     let header: AsciicastHeader = serde_json::from_str(header_line)
         .unwrap_or_else(|e| panic!("invalid header in {}: {e}", path.display()));
-    assert_eq!(header.version, 3, "expected asciicast v3 for {}", path.display());
+    assert_eq!(
+        header.version,
+        3,
+        "expected asciicast v3 for {}",
+        path.display()
+    );
 
     let mut parser = vt100::Parser::new(header.term.rows, header.term.cols, 0);
     let mut stats = ReplayStats {
@@ -70,13 +75,9 @@ fn replay_cast(path: &Path) -> (ReplayStats, Vec<ReplayFrame>) {
                 idx + 2
             )
         });
-        let arr = event.as_array().unwrap_or_else(|| {
-            panic!(
-                "event is not array at {} line {}",
-                path.display(),
-                idx + 2
-            )
-        });
+        let arr = event
+            .as_array()
+            .unwrap_or_else(|| panic!("event is not array at {} line {}", path.display(), idx + 2));
         if arr.len() != 3 {
             continue;
         }
@@ -195,8 +196,7 @@ fn assert_working_segment(frames: &[ReplayFrame], expectation: WorkingSegmentExp
         );
     }
     assert_eq!(
-        stop.pane.state,
-        expected_stop_state,
+        stop.pane.state, expected_stop_state,
         "unexpected stop state"
     );
 
@@ -228,7 +228,10 @@ fn replay_claude_cast() {
         stats.claude_frames > 0,
         "expected at least some Claude detections"
     );
-    assert!(stats.working_frames > 0, "expected Working frames for Claude");
+    assert!(
+        stats.working_frames > 0,
+        "expected Working frames for Claude"
+    );
     assert!(stats.idle_frames > 0, "expected Idle frames for Claude");
     assert!(
         !stats.type_flip,
@@ -295,7 +298,10 @@ fn replay_codex_cast() {
         stats.codex_frames > 0,
         "expected at least some Codex detections"
     );
-    assert!(stats.idle_frames > 0, "expected at least one Idle frame for Codex");
+    assert!(
+        stats.idle_frames > 0,
+        "expected at least one Idle frame for Codex"
+    );
     assert!(
         !stats.type_flip,
         "agent type should not flip once detected in Codex cast"
@@ -351,11 +357,7 @@ fn print_state_change_frames() {
         for frame in state_change_points(&frames) {
             println!(
                 "frame={} ts={:.3} agent={:?} state={:?}\n{}\n---",
-                frame.index,
-                frame.timestamp,
-                frame.pane.agent_type,
-                frame.pane.state,
-                frame.tail
+                frame.index, frame.timestamp, frame.pane.agent_type, frame.pane.state, frame.tail
             );
         }
     }
