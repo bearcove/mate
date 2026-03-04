@@ -61,12 +61,12 @@ impl crate::protocol::Coop for CoopServer {
         }
 
         let message = format!(
-            "Hey! A buddy of yours needs help with something — your assistance is much appreciated \
-             and they'll be very thankful.\n\n\
-             The full assignment is at: {}\n\
+            "🌱 Hey! A buddy of yours needs help with something — your assistance \
+             is much appreciated and they'll be very thankful.\n\n\
+             🌱 The full assignment is at: {}\n\
              Please read it, then do your best to help.\n\n\
-             IMPORTANT: When you're done, you MUST send your response by executing this shell command \
-             (use your Bash/shell tool — do NOT just print it as text):\n\n\
+             🌱 IMPORTANT: When you're done, you MUST send your response by executing \
+             this shell command (use your Bash/shell tool — do NOT just print it as text):\n\n\
              cat <<'BUDEOF' | bud respond {request_id}\n\
              <put your full response here>\n\
              BUDEOF",
@@ -177,13 +177,12 @@ async fn watch_responses(dir: PathBuf, requests: Arc<Mutex<HashMap<String, Reque
             if let Some(request) = reqs.remove(&request_id) {
                 seen.insert(path.clone());
 
-                let preview = match std::fs::read_to_string(&path) {
-                    Ok(content) => summarize_response(&content),
+                let body = match std::fs::read_to_string(&path) {
+                    Ok(content) => summarize_response(&content, &path),
                     Err(_) => "(could not read response file)".to_string(),
                 };
                 let message = format!(
-                    "[bud response {request_id}] Response at {}\n{preview}",
-                    path.display()
+                    "🌱 Your buddy came through! Here's their response to request {request_id}:\n{body}"
                 );
                 if let Err(e) = tmux::send_to_pane(&request.source_pane, &message) {
                     error!(
@@ -198,17 +197,19 @@ async fn watch_responses(dir: PathBuf, requests: Arc<Mutex<HashMap<String, Reque
     }
 }
 
-fn summarize_response(content: &str) -> String {
+fn summarize_response(content: &str, response_path: &std::path::Path) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let n = lines.len();
-    if n <= 6 {
+    if n <= 20 {
         return content.to_string();
     }
-    let head = &lines[..3];
-    let tail = &lines[n - 3..];
+    let head = &lines[..10];
+    let tail = &lines[n - 10..];
+    let cut = n - 20;
     format!(
-        "{}\n... ({n} lines total) ...\n{}",
+        "{}\n[{cut} lines cut — complete response at {}]\n{}",
         head.join("\n"),
+        response_path.display(),
         tail.join("\n")
     )
 }

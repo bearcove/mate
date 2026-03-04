@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
             std::fs::create_dir_all(response_dir())?;
             let path = response_dir().join(format!("{request_id}.md"));
             std::fs::write(&path, &content)?;
-            eprintln!("bud: response written for {request_id}");
+            eprintln!("🌱 Response sent for request {request_id}!");
             Ok(())
         }
     }
@@ -140,7 +140,7 @@ async fn ensure_server_running() -> Result<()> {
         let _ = std::fs::remove_file(&socket);
     }
 
-    eprintln!("bud: starting server...");
+    eprintln!("🌱 Starting bud server...");
     let exe = std::env::current_exe()?;
     let log_file = std::fs::File::create(log_path())?;
     std::process::Command::new(exe)
@@ -179,7 +179,8 @@ async fn client_assign(source_pane: String, content: String, clear: bool) -> Res
         .await
         .map_err(|e| eyre::eyre!("{e:?}"))?;
 
-    eprintln!("bud: task assigned (request_id={request_id})");
-    eprintln!("bud: response will be delivered to your pane when ready");
+    eprintln!("🌱 Task assigned (request_id={request_id})");
+    eprintln!("🌱 Your buddy's on it now — they might be a few minutes so sit back and relax.");
+    eprintln!("🌱 When they're done, you'll get the reply back as a regular chat message.");
     Ok(())
 }
