@@ -30,18 +30,6 @@ enum Command {
         #[facet(args::positional)]
         request_id: String,
     },
-    /// Nudge the buddy handling a request
-    Nudge {
-        /// The request ID to nudge
-        #[facet(args::positional)]
-        request_id: String,
-    },
-    /// Retry a request by reassigning it with a new ID
-    Retry {
-        /// The request ID to retry
-        #[facet(args::positional)]
-        request_id: String,
-    },
     /// Show full task details for a request
     Show {
         /// The request ID to show
@@ -90,8 +78,6 @@ USAGE:
     bud server                       Start the server (usually auto-started)
     bud list                         List pending/in-flight requests
     bud cancel <id>                  Cancel a pending request
-    bud nudge <id>                   Remind buddy about a pending request
-    bud retry <id>                   Reassign a request with a new ID
     bud show <id>                    Show full task content for a request
     bud spy <id>                     Peek at buddy's pane
     cat <<'EOF' | bud steer <id>     Steer buddy on a pending request
@@ -169,8 +155,6 @@ async fn main() -> Result<()> {
         }
         Some(Command::List) => list_requests(),
         Some(Command::Cancel { request_id }) => cancel_request(&request_id),
-        Some(Command::Nudge { request_id }) => nudge_request(&request_id),
-        Some(Command::Retry { request_id }) => retry_request(&request_id).await,
         Some(Command::Show { request_id }) => show_request(&request_id),
         Some(Command::Spy { request_id }) => spy_request(&request_id),
         Some(Command::Steer { request_id }) => steer_request(&request_id),
@@ -242,7 +226,7 @@ async fn client_assign(source_pane: String, content: String, clear: bool, title:
     match assign_once(&source_pane, &content, clear, title.clone(), &binary_hash).await {
         Ok(request_id) => {
             eprintln!("{}", warmth::assigned());
-            print_steer_hint(&request_id);
+            eprintln!("Request ID: {request_id}");
             Ok(())
         }
         Err(first_error) => {
@@ -255,7 +239,7 @@ async fn client_assign(source_pane: String, content: String, clear: bool, title:
                     eyre::eyre!("assign failed after retry: {e:?}")
                 })?;
             eprintln!("{}", warmth::assigned());
-            print_steer_hint(&request_id);
+            eprintln!("Request ID: {request_id}");
             Ok(())
         }
     }
@@ -302,10 +286,6 @@ fn validate_request_id(request_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn print_steer_hint(request_id: &str) {
-    eprintln!("Request ID: {request_id}");
-}
-
 fn cancel_request(request_id: &str) -> Result<()> {
     validate_request_id(request_id)?;
     let path = request_dir().join(request_id);
@@ -315,20 +295,6 @@ fn cancel_request(request_id: &str) -> Result<()> {
     }
     std::fs::remove_dir_all(&path)?;
     eprintln!("Task {request_id} cancelled.");
-    Ok(())
-}
-
-fn nudge_request(request_id: &str) -> Result<()> {
-    validate_request_id(request_id)?;
-    let path = request_dir().join(request_id);
-    let meta = util::read_request_meta(&path).ok_or_else(|| {
-        eyre::eyre!("No task with ID {request_id} found.")
-    })?;
-    let message = format!(
-        "Hey buddy — task {request_id} is still waiting for your response. Need a hand?"
-    );
-    tmux::send_to_pane(&meta.target_pane, &message)?;
-    eprintln!("Nudged buddy for task {request_id} on pane {}.", meta.target_pane);
     Ok(())
 }
 
@@ -396,32 +362,6 @@ fn spy_request(request_id: &str) -> Result<()> {
         .ok_or_else(|| eyre::eyre!("No task with ID {request_id} found."))?;
     let pane_content = tmux::capture_pane(&meta.target_pane)?;
     eprintln!("Pane {}:\n{}", meta.target_pane, pane_content);
-    Ok(())
-}
-
-async fn retry_request(request_id: &str) -> Result<()> {
-    validate_request_id(request_id)?;
-    let path = request_dir().join(request_id);
-    let meta = util::read_request_meta(&path).ok_or_else(|| {
-        eyre::eyre!("No task with ID {request_id} found.")
-    })?;
-    let content = util::read_request_content(&path).ok_or_else(|| {
-        eyre::eyre!("Task {request_id} is missing request content.")
-    })?;
-    std::fs::remove_dir_all(&path)?;
-
-    ensure_server_running().await?;
-    let binary_hash = hash::binary_hash();
-    let new_request_id = assign_once(
-        &meta.source_pane,
-        &content,
-        false,
-        meta.title,
-        &binary_hash,
-    )
-    .await?;
-    eprintln!("Retried task {request_id} as {new_request_id}.");
-    print_steer_hint(&new_request_id);
     Ok(())
 }
 
