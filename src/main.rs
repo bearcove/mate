@@ -12,8 +12,8 @@ use eyre::Result;
 use facet::Facet;
 use figue as args;
 use std::io::Read as _;
-use std::time::Duration;
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Facet, Debug)]
 struct Args {
@@ -62,6 +62,8 @@ enum Command {
     Issues,
     /// Create GitHub issues from markdown files in the synced new/ folder
     IssueCreate,
+    /// Push local edits in synced issue files to GitHub
+    IssueEdit,
     /// Assign a task to another agent (reads from stdin)
     Assign {
         /// Keep the worker's existing context (default: clear it)
@@ -106,6 +108,7 @@ USAGE:
     bud wait <id> --timeout <secs>   Wait with custom timeout
     bud issues                       Sync GitHub issues for current repo
     bud issue-create                 Create issues from new/*.md drafts
+    bud issue-edit                   Sync edited issue files in all/ with GitHub
     cat <<'EOF' | bud assign                 Assign a task (clears worker context)
     cat <<'EOF' | bud assign --keep          Assign, keeping worker's context
     cat <<'EOF' | bud assign --title "..."   Assign with a title
@@ -167,9 +170,7 @@ fn tmux_session_name_for_pane(pane: &str) -> Result<String> {
         .args(["display-message", "-t", pane, "-p", "#{session_name}"])
         .output()?;
     if !output.status.success() {
-        return Err(eyre::eyre!(
-            "tmux display-message failed for pane {pane}"
-        ));
+        return Err(eyre::eyre!("tmux display-message failed for pane {pane}"));
     }
     let session_name = String::from_utf8(output.stdout)?.trim().to_string();
     if session_name.is_empty() {
@@ -210,7 +211,7 @@ async fn main() -> Result<()> {
                 request_root_dir(),
                 log_path(),
             )
-                .await
+            .await
         }
         Some(Command::List) => list_requests(),
         Some(Command::Cancel { request_id }) => cancel_request(&request_id),
@@ -220,6 +221,7 @@ async fn main() -> Result<()> {
         Some(Command::Update { request_id }) => update_request(&request_id),
         Some(Command::Issues) => sync_issues_to_pane(),
         Some(Command::IssueCreate) => issue_create_from_files(),
+        Some(Command::IssueEdit) => issue_edit_from_files(),
         Some(Command::Assign { keep, title, issue }) => {
             let pane = std::env::var("TMUX_PANE")
                 .map_err(|_| eyre::eyre!("TMUX_PANE not set — are you inside tmux?"))?;
@@ -237,9 +239,7 @@ async fn main() -> Result<()> {
                 std::fs::create_dir_all(orphaned_dir())?;
                 let orphaned_path = orphaned_dir().join(format!("{request_id}.md"));
                 std::fs::write(&orphaned_path, &content)?;
-                eprintln!(
-                    "No matching request found for {request_id} in session {session_name}."
-                );
+                eprintln!("No matching request found for {request_id} in session {session_name}.");
                 eprintln!("Response saved to: {}", orphaned_path.display());
                 eprintln!("Ask the user what to do with it.");
                 return Ok(());
@@ -251,7 +251,10 @@ async fn main() -> Result<()> {
             eprintln!("{}", warmth::responded());
             Ok(())
         }
-        Some(Command::Wait { request_id, timeout }) => {
+        Some(Command::Wait {
+            request_id,
+            timeout,
+        }) => {
             let timeout_secs = timeout.unwrap_or(90);
             wait_for_response(&request_id, timeout_secs)
         }
@@ -392,9 +395,7 @@ fn validate_request_id(request_id: &str) -> Result<()> {
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
     {
-        return Err(eyre::eyre!(
-            "invalid request ID (expected 8 hex chars)"
-        ));
+        return Err(eyre::eyre!("invalid request ID (expected 8 hex chars)"));
     }
     Ok(())
 }
@@ -419,9 +420,7 @@ fn steer_request(request_id: &str) -> Result<()> {
     let meta = util::read_request_meta(&path)
         .ok_or_else(|| eyre::eyre!("No task with ID {request_id} found."))?;
     let message = read_stdin()?;
-    let steer = format!(
-        "📌 Update from the captain on task {request_id}:\n\n{message}"
-    );
+    let steer = format!("📌 Update from the captain on task {request_id}:\n\n{message}");
     tmux::send_to_pane(&meta.target_pane, &steer)?;
     eprintln!(
         "Sent steer update for task {request_id} to pane {}.",
@@ -474,10 +473,7 @@ fn show_request(request_id: &str) -> Result<()> {
     let content = util::read_request_content(&path)
         .ok_or_else(|| eyre::eyre!("Task {request_id} is missing request content."))?;
     eprintln!("Task {request_id}");
-    eprintln!(
-        "Source: {}  Target: {}",
-        meta.source_pane, meta.target_pane
-    );
+    eprintln!("Source: {}  Target: {}", meta.source_pane, meta.target_pane);
     eprintln!("Title: {}", meta.title.as_deref().unwrap_or("(none)"));
     eprintln!();
     eprintln!("{content}");
@@ -547,7 +543,14 @@ fn list_requests() -> Result<()> {
             "no"
         };
 
-        rows.push(Row { id, source: source_pane, target: target_pane, title, age, response: response_exists });
+        rows.push(Row {
+            id,
+            source: source_pane,
+            target: target_pane,
+            title,
+            age,
+            response: response_exists,
+        });
     }
 
     if rows.is_empty() {
@@ -559,8 +562,12 @@ fn list_requests() -> Result<()> {
     let show_title = rows.iter().any(|r| r.title.is_some());
 
     if show_title {
-        eprintln!("REQUEST     SOURCE        TARGET       TITLE                      AGE         RESPONSE");
-        eprintln!("----------  ------------  -----------  -------------------------  ----------  --------");
+        eprintln!(
+            "REQUEST     SOURCE        TARGET       TITLE                      AGE         RESPONSE"
+        );
+        eprintln!(
+            "----------  ------------  -----------  -------------------------  ----------  --------"
+        );
         for r in &rows {
             eprintln!(
                 "{:<10}  {:<12}  {:<11}  {:<25}  {:<10}  {}",
@@ -598,6 +605,17 @@ fn sync_issues_to_pane() -> Result<()> {
     let result = github::write_issue_files(&repo, &issues)?;
 
     let mut summary = String::new();
+    if !result.issue_edits_applied.is_empty() {
+        summary.push_str("Applied issue edits:\n");
+        for update in &result.issue_edits_applied {
+            summary.push_str(&format!(
+                "  Updated issue #{}: {}\n",
+                update.number,
+                update.changes.join(", ")
+            ));
+        }
+        summary.push('\n');
+    }
     if !created.is_empty() {
         summary.push_str(&format!("Created {} new issues:\n", created.len()));
         for pending in &created {
@@ -614,11 +632,18 @@ fn sync_issues_to_pane() -> Result<()> {
     for failure in &failed {
         summary.push_str(&format!(
             "Failed to create {}: {}\n",
-            failure.filename,
-            failure.error
+            failure.filename, failure.error
         ));
     }
     if !failed.is_empty() {
+        summary.push('\n');
+    }
+
+    if !result.issue_edit_errors.is_empty() {
+        summary.push_str("Issue edit failures:\n");
+        for failure in &result.issue_edit_errors {
+            summary.push_str(&format!("- {failure}\n"));
+        }
         summary.push('\n');
     }
 
@@ -633,7 +658,10 @@ fn sync_issues_to_pane() -> Result<()> {
         result.by_updated_dir.display(),
     ));
     if let Some(labels_dir) = result.labels_dir.as_ref() {
-        summary.push_str(&format!("\n  Browse by label:  ls {}/", labels_dir.display()));
+        summary.push_str(&format!(
+            "\n  Browse by label:  ls {}/",
+            labels_dir.display()
+        ));
     }
     if let Some(milestones_dir) = result.milestones_dir.as_ref() {
         summary.push_str(&format!(
@@ -655,6 +683,43 @@ fn sync_issues_to_pane() -> Result<()> {
         result.new_dir.display()
     ));
     tmux::send_to_pane(&pane, &summary)?;
+    Ok(())
+}
+
+fn issue_edit_from_files() -> Result<()> {
+    let pane = std::env::var("TMUX_PANE")
+        .map_err(|_| eyre::eyre!("TMUX_PANE not set — are you inside tmux?"))?;
+    let repo = github::infer_repo()?;
+    let summary = github::sync_local_issue_edits(&repo)?;
+
+    let mut message = String::new();
+    if summary.applied.is_empty() && summary.failed.is_empty() {
+        message.push_str(&format!(
+            "No issue updates detected for {repo}. Edit files under: {}/all/ and run bud issue-edit."
+        , github::issue_repo_dir(&repo).join("all").display()));
+    } else {
+        if !summary.applied.is_empty() {
+            message.push_str("Applied issue updates:\n");
+            for update in &summary.applied {
+                let changes = if update.changes.is_empty() {
+                    "changed".to_string()
+                } else {
+                    update.changes.join(", ")
+                };
+                message.push_str(&format!("Updated issue #{}: {}\n", update.number, changes));
+            }
+            message.push('\n');
+        }
+
+        if !summary.failed.is_empty() {
+            message.push_str("Failed issue updates:\n");
+            for failure in &summary.failed {
+                message.push_str(&format!("- {failure}\n"));
+            }
+        }
+    }
+
+    tmux::send_to_pane(&pane, &message)?;
     Ok(())
 }
 
@@ -706,7 +771,9 @@ fn wait_for_response(request_id: &str, timeout_secs: u64) -> Result<()> {
         }
     }
 
-    Err(eyre::eyre!("Timed out waiting for response on {request_id} after {timeout_secs}s"))
+    Err(eyre::eyre!(
+        "Timed out waiting for response on {request_id} after {timeout_secs}s"
+    ))
 }
 
 struct PendingIssueCreated {

@@ -23,6 +23,10 @@ so you can review, create, and assign issues without leaving your tmux workflow.
 - `bud issue-create`
   - manual fallback to process `new/*.md` drafts only
   - auto-creates missing labels and milestones before creating issues
+- `bud issue-edit`
+  - pushes local edits in `all/` back to GitHub
+  - compares files against `.snapshots/` to detect changes
+  - only updates changed fields (title, body, labels, milestone, assignees)
 - `bud assign` and `bud assign --issue <number>`
   - sends tasks to the buddy
   - `--issue` injects full synced issue content and adds a commit-reference reminder

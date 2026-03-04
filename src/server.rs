@@ -97,14 +97,16 @@ impl crate::protocol::Coop for CoopServer {
         );
         {
             let mut idle_states = self.idle_states.lock().await;
-            let state = idle_states.entry(session_name.clone()).or_insert(IdleState {
-                empty_since: None,
-                notified: false,
-                last_title: None,
-                source_pane: None,
-                last_pane_content: None,
-                pane_unchanged_since: None,
-            });
+            let state = idle_states
+                .entry(session_name.clone())
+                .or_insert(IdleState {
+                    empty_since: None,
+                    notified: false,
+                    last_title: None,
+                    source_pane: None,
+                    last_pane_content: None,
+                    pane_unchanged_since: None,
+                });
             state.empty_since = None;
             state.notified = false;
             state.last_title = None;
@@ -185,8 +187,7 @@ pub async fn run_server(
     tracing_subscriber::fmt()
         .with_writer(log_file)
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("bud=info".parse()?),
+            tracing_subscriber::EnvFilter::from_default_env().add_directive("bud=info".parse()?),
         )
         .init();
 
@@ -638,12 +639,11 @@ async fn process_response_files(
                         }
                         let orphaned_path =
                             orphaned_dir().join(format!("{session_name}-{request_id}.md"));
-                        let move_result = std::fs::rename(&response_path, &orphaned_path).or_else(
-                            |_| {
+                        let move_result =
+                            std::fs::rename(&response_path, &orphaned_path).or_else(|_| {
                                 std::fs::copy(&response_path, &orphaned_path)?;
                                 std::fs::remove_file(&response_path)
-                            },
-                        );
+                            });
                         match move_result {
                             Ok(()) => {
                                 warn!(
@@ -699,7 +699,10 @@ async fn process_response_files(
             if let Err(e) = std::fs::remove_dir_all(&request_path)
                 && e.kind() != std::io::ErrorKind::NotFound
             {
-                error!("failed to remove request directory {}: {e}", request_path.display());
+                error!(
+                    "failed to remove request directory {}: {e}",
+                    request_path.display()
+                );
             }
             pane_states.remove(&key);
             if let Err(e) = std::fs::remove_file(&response_path)

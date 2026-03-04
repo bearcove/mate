@@ -46,6 +46,7 @@ bud wait <id>                    Wait for a response (default 90s timeout)
 bud wait <id> --timeout <secs>   Wait with custom timeout
 bud issues                       Sync issues to /tmp/bud-issues from cwd repo
 bud issue-create                 Process issue drafts in /tmp/bud-issues/.../new
+bud issue-edit                   Push local edits in all/ back to GitHub
 cat <<'EOF' | bud steer <id>     Send captain-to-buddy clarification
 cat <<'EOF' | bud update <id>    Send buddy-to-captain progress update
 cat <<'EOF' | bud assign                 Assign a task (clears buddy context)

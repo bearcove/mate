@@ -91,8 +91,43 @@ pub struct IssueSyncResult {
     pub milestones_markdown_path: PathBuf,
     pub all_dir: PathBuf,
     pub new_dir: PathBuf,
+    pub issue_edits_applied: Vec<IssueEditReport>,
+    pub issue_edit_errors: Vec<String>,
     pub open_count: usize,
     pub closed_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedIssueFile {
+    pub number: u64,
+    pub title: String,
+    pub labels: Vec<String>,
+    pub milestone: Option<String>,
+    pub assignees: Vec<String>,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct IssueFieldDiff {
+    title: Option<String>,
+    body: Option<String>,
+    milestone: Option<Option<String>>,
+    added_labels: Vec<String>,
+    removed_labels: Vec<String>,
+    added_assignees: Vec<String>,
+    removed_assignees: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IssueEditReport {
+    pub number: u64,
+    pub changes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct IssueEditSummary {
+    pub applied: Vec<IssueEditReport>,
+    pub failed: Vec<String>,
 }
 
 const NEW_ISSUE_TEMPLATE: &str = r#"# Issue title here
@@ -125,6 +160,175 @@ pub fn issue_repo_dir(repo: &str) -> PathBuf {
     PathBuf::from("/tmp/bud-issues").join(repo)
 }
 
+pub fn parse_issue_file(content: &str) -> Result<ParsedIssueFile> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut idx = lines
+        .iter()
+        .position(|line| !line.trim().is_empty())
+        .ok_or_else(|| eyre::eyre!("issue file is empty"))?;
+
+    let title_line = lines[idx].trim();
+    let title_suffix = title_line
+        .strip_prefix("# #")
+        .ok_or_else(|| eyre::eyre!("issue file must start with '# #<number>: <title>'"))?;
+    let (number_raw, title_raw) = title_suffix
+        .split_once(':')
+        .ok_or_else(|| eyre::eyre!("issue file header must be '# #<number>: <title>'"))?;
+    let number = number_raw
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| eyre::eyre!("invalid issue number in header: {number_raw}"))?;
+    let title = title_raw.trim().to_string();
+
+    let mut labels = Vec::new();
+    let mut milestone = None;
+    let mut assignees = Vec::new();
+
+    let mut body_start = None;
+    while idx + 1 < lines.len() {
+        idx += 1;
+        let line = lines[idx].trim();
+        if line == "---" {
+            body_start = Some(idx + 1);
+            break;
+        }
+        if let Some(value) = line.strip_prefix("**Labels:**") {
+            labels = split_csv(value);
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("**Milestone:**") {
+            let value = value.trim();
+            if !value.is_empty() && !value.eq_ignore_ascii_case("none") {
+                milestone = Some(value.to_string());
+            }
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("**Assignees:**") {
+            assignees = split_csv(value);
+            continue;
+        }
+    }
+
+    let body_start =
+        body_start.ok_or_else(|| eyre::eyre!("issue file is missing body separator"))?;
+
+    let mut body_end = lines.len();
+    for (offset, line) in lines.iter().enumerate().skip(body_start) {
+        if line.trim() == "---" {
+            body_end = offset;
+            break;
+        }
+    }
+
+    let body = lines[body_start..body_end].join("\n").trim().to_string();
+
+    Ok(ParsedIssueFile {
+        number,
+        title,
+        labels,
+        milestone,
+        assignees,
+        body,
+    })
+}
+
+pub fn sync_local_issue_edits(repo: &str) -> Result<IssueEditSummary> {
+    let base_dir = issue_repo_dir(repo);
+    let all_dir = base_dir.join("all");
+    let snapshot_dir = base_dir.join(".snapshots");
+
+    if !all_dir.is_dir() {
+        return Ok(IssueEditSummary::default());
+    }
+
+    let mut summary = IssueEditSummary::default();
+    let entries = match std::fs::read_dir(&all_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(summary),
+        Err(e) => return Err(e.into()),
+    };
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+
+        let edited_content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) => {
+                summary
+                    .failed
+                    .push(format!("failed to read issue file {}: {e}", path.display()));
+                continue;
+            }
+        };
+
+        let edited = match parse_issue_file(&edited_content) {
+            Ok(value) => value,
+            Err(e) => {
+                summary.failed.push(format!(
+                    "failed to parse edited issue {}: {e}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+
+        let snapshot_path = snapshot_dir.join(format!("{}.md", edited.number));
+        let baseline_content = match std::fs::read_to_string(&snapshot_path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                continue;
+            }
+            Err(e) => {
+                summary.failed.push(format!(
+                    "failed to read snapshot {}: {e}",
+                    snapshot_path.display()
+                ));
+                continue;
+            }
+        };
+
+        if edited_content == baseline_content {
+            continue;
+        }
+
+        let baseline = match parse_issue_file(&baseline_content) {
+            Ok(value) => value,
+            Err(e) => {
+                summary.failed.push(format!(
+                    "failed to parse snapshot for {}: {e}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+
+        let diff = diff_issue_fields(&baseline, &edited);
+        if diff.is_empty() {
+            continue;
+        }
+
+        if let Err(e) = apply_issue_edits(repo, &edited, &diff) {
+            let detail = format!("failed to sync issue #{} edits: {e}", edited.number);
+            summary.failed.push(detail);
+            continue;
+        }
+
+        summary.applied.push(IssueEditReport {
+            number: edited.number,
+            changes: diff.changes(edited.number),
+        });
+    }
+
+    Ok(summary)
+}
+
 pub fn read_issue_file(repo: &str, number: u64) -> Result<String> {
     let all_dir = issue_repo_dir(repo).join("all");
     let prefix = format!("{number} - ");
@@ -132,10 +336,7 @@ pub fn read_issue_file(repo: &str, number: u64) -> Result<String> {
     let entries = std::fs::read_dir(&all_dir)?;
     for entry in entries {
         let entry = entry?;
-        if !entry
-            .file_type()
-            .is_ok_and(|file_type| file_type.is_file())
-        {
+        if !entry.file_type().is_ok_and(|file_type| file_type.is_file()) {
             continue;
         }
 
@@ -262,7 +463,9 @@ issue_{number}: repository(owner: "{owner}", name: "{name}") {{
         }
 
         let root: Value = serde_json::from_slice(&output.stdout)?;
-        let data = root.get("data").ok_or_else(|| eyre::eyre!("graphql response missing data"))?;
+        let data = root
+            .get("data")
+            .ok_or_else(|| eyre::eyre!("graphql response missing data"))?;
 
         for number in chunk {
             let alias = format!("issue_{number}");
@@ -295,6 +498,8 @@ issue_{number}: repository(owner: "{owner}", name: "{name}") {{
 
 pub fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSyncResult> {
     let dir = issue_repo_dir(repo);
+
+    let edit_summary = sync_local_issue_edits(repo)?;
     if dir.exists() {
         let sync_paths = [
             "all",
@@ -329,12 +534,14 @@ pub fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSyncResult
     let by_created_dir = dir.join("by-created");
     let by_updated_dir = dir.join("by-updated");
     let new_dir = dir.join("new");
+    let snapshot_dir = dir.join(".snapshots");
     std::fs::create_dir_all(&all_dir)?;
     std::fs::create_dir_all(&open_dir)?;
     std::fs::create_dir_all(&closed_dir)?;
     std::fs::create_dir_all(&by_created_dir)?;
     std::fs::create_dir_all(&by_updated_dir)?;
     std::fs::create_dir_all(&new_dir)?;
+    std::fs::create_dir_all(&snapshot_dir)?;
     std::fs::write(new_dir.join("TEMPLATE.md"), NEW_ISSUE_TEMPLATE)?;
 
     let mut number_to_filename: BTreeMap<u64, String> = BTreeMap::new();
@@ -343,8 +550,13 @@ pub fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSyncResult
 
     for issue in issues {
         let filename = issue_filename(issue);
+        let issue_content = render_issue(issue);
         number_to_filename.insert(issue.number, filename.clone());
-        std::fs::write(all_dir.join(&filename), render_issue(issue))?;
+        std::fs::write(all_dir.join(&filename), &issue_content)?;
+        std::fs::write(
+            snapshot_dir.join(format!("{}.md", issue.number)),
+            issue_content,
+        )?;
 
         let link_target = format!("../all/{filename}");
         if issue.state.eq_ignore_ascii_case("open") {
@@ -406,7 +618,10 @@ pub fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSyncResult
             let filename = issue_filename(issue);
             let milestone_dir = root.join(sanitize_title_for_filename(&milestone.title));
             std::fs::create_dir_all(&milestone_dir)?;
-            create_symlink(&format!("../../all/{filename}"), &milestone_dir.join(&filename))?;
+            create_symlink(
+                &format!("../../all/{filename}"),
+                &milestone_dir.join(&filename),
+            )?;
         }
         Some(root)
     } else {
@@ -425,7 +640,13 @@ pub fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSyncResult
     let issue_numbers = issues.iter().map(|i| i.number).collect::<Vec<_>>();
     let deps_markdown_path = dir.join("DEPS.md");
     let deps_path = match fetch_issue_relationships(repo, &issue_numbers) {
-        Ok(relationships) => write_deps(repo, &dir, &deps_markdown_path, &relationships, &number_to_filename)?,
+        Ok(relationships) => write_deps(
+            repo,
+            &dir,
+            &deps_markdown_path,
+            &relationships,
+            &number_to_filename,
+        )?,
         Err(e) => {
             eprintln!("Warning: could not fetch issue dependencies (GraphQL): {e}");
             let deps_md = format!(
@@ -456,6 +677,8 @@ pub fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSyncResult
         by_updated_dir,
         labels_dir,
         milestones_dir,
+        issue_edits_applied: edit_summary.applied,
+        issue_edit_errors: edit_summary.failed,
         deps_path,
         deps_markdown_path,
         labels_markdown_path,
@@ -530,9 +753,138 @@ pub fn parse_new_issue(content: &str) -> Result<NewIssue> {
     })
 }
 
+fn diff_issue_fields(old: &ParsedIssueFile, new: &ParsedIssueFile) -> IssueFieldDiff {
+    let mut diff = IssueFieldDiff::default();
+
+    if old.title != new.title {
+        diff.title = Some(new.title.clone());
+    }
+    if old.body != new.body {
+        diff.body = Some(new.body.clone());
+    }
+
+    if old.milestone != new.milestone {
+        diff.milestone = Some(new.milestone.clone());
+    }
+
+    let old_labels: BTreeSet<_> = old.labels.iter().map(|s| s.to_string()).collect();
+    let new_labels: BTreeSet<_> = new.labels.iter().map(|s| s.to_string()).collect();
+    for label in new_labels.difference(&old_labels) {
+        diff.added_labels.push(label.clone());
+    }
+    for label in old_labels.difference(&new_labels) {
+        diff.removed_labels.push(label.clone());
+    }
+
+    let old_assignees: BTreeSet<_> = old.assignees.iter().map(|s| s.to_string()).collect();
+    let new_assignees: BTreeSet<_> = new.assignees.iter().map(|s| s.to_string()).collect();
+    for assignee in new_assignees.difference(&old_assignees) {
+        diff.added_assignees.push(assignee.clone());
+    }
+    for assignee in old_assignees.difference(&new_assignees) {
+        diff.removed_assignees.push(assignee.clone());
+    }
+
+    diff
+}
+
+impl IssueFieldDiff {
+    fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.body.is_none()
+            && self.milestone.is_none()
+            && self.added_labels.is_empty()
+            && self.removed_labels.is_empty()
+            && self.added_assignees.is_empty()
+            && self.removed_assignees.is_empty()
+    }
+
+    fn changes(&self, issue_number: u64) -> Vec<String> {
+        let mut changes = Vec::new();
+        if self.title.is_some() {
+            changes.push("changed title".to_string());
+        }
+        if self.body.is_some() {
+            changes.push("updated body".to_string());
+        }
+        match &self.milestone {
+            Some(Some(m)) => changes.push(format!("set milestone to '{m}'")),
+            Some(None) => changes.push("cleared milestone".to_string()),
+            None => {}
+        }
+        for label in &self.added_labels {
+            changes.push(format!("added label '{label}'"));
+        }
+        for label in &self.removed_labels {
+            changes.push(format!("removed label '{label}'"));
+        }
+        for assignee in &self.added_assignees {
+            changes.push(format!("added assignee '{assignee}'"));
+        }
+        for assignee in &self.removed_assignees {
+            changes.push(format!("removed assignee '{assignee}'"));
+        }
+        if changes.is_empty() {
+            changes.push(format!("updated local content for #{issue_number}"));
+        }
+        changes
+    }
+}
+
+fn apply_issue_edits(repo: &str, edited: &ParsedIssueFile, diff: &IssueFieldDiff) -> Result<()> {
+    if diff.is_empty() {
+        return Ok(());
+    }
+
+    let mut cmd = Command::new("gh");
+    cmd.args(["issue", "edit", "-R", repo, &edited.number.to_string()]);
+
+    if let Some(title) = diff.title.as_deref() {
+        cmd.args(["--title", title]);
+    }
+    if let Some(body) = diff.body.as_deref() {
+        cmd.args(["--body", body]);
+    }
+    if let Some(milestone) = diff.milestone.as_ref() {
+        match milestone.as_deref() {
+            Some(value) => cmd.args(["--milestone", value]),
+            None => cmd.args(["--milestone", ""]),
+        };
+    }
+    for label in &diff.added_labels {
+        cmd.args(["--add-label", label]);
+    }
+    for label in &diff.removed_labels {
+        cmd.args(["--remove-label", label]);
+    }
+    for assignee in &diff.added_assignees {
+        cmd.args(["--add-assignee", assignee]);
+    }
+    for assignee in &diff.removed_assignees {
+        cmd.args(["--remove-assignee", assignee]);
+    }
+
+    let output = cmd.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(eyre::eyre!("gh issue edit failed: {stderr}"));
+    }
+
+    Ok(())
+}
+
 pub fn create_issue(repo: &str, issue: &NewIssue) -> Result<(u64, String)> {
     let mut cmd = Command::new("gh");
-    cmd.args(["issue", "create", "-R", repo, "--title", &issue.title, "--body", &issue.body]);
+    cmd.args([
+        "issue",
+        "create",
+        "-R",
+        repo,
+        "--title",
+        &issue.title,
+        "--body",
+        &issue.body,
+    ]);
     for label in &issue.labels {
         cmd.args(["--label", label]);
     }
@@ -577,7 +929,10 @@ pub fn ensure_label_exists(repo: &str, label: &str) -> Result<()> {
     if stderr.contains("already exists") {
         return Ok(());
     }
-    Err(eyre::eyre!("gh label create failed for '{label}': {}", stderr.trim()))
+    Err(eyre::eyre!(
+        "gh label create failed for '{label}': {}",
+        stderr.trim()
+    ))
 }
 
 pub fn ensure_milestone_exists(repo: &str, milestone: &str) -> Result<()> {
@@ -625,7 +980,11 @@ fn write_deps(
 
     for (number, rel) in relationships {
         if !rel.blocked_by.is_empty() {
-            blocked_by_lines.push(format!("#{} is blocked by: {}", number, format_numbers(&rel.blocked_by)));
+            blocked_by_lines.push(format!(
+                "#{} is blocked by: {}",
+                number,
+                format_numbers(&rel.blocked_by)
+            ));
             for other in &rel.blocked_by {
                 if let Some(filename) = number_to_filename.get(number) {
                     let target_dir = deps_dir.join(format!("blocked-by-{other}"));
@@ -636,7 +995,11 @@ fn write_deps(
             }
         }
         if !rel.blocking.is_empty() {
-            blocking_lines.push(format!("#{} blocks: {}", number, format_numbers(&rel.blocking)));
+            blocking_lines.push(format!(
+                "#{} blocks: {}",
+                number,
+                format_numbers(&rel.blocking)
+            ));
             for other in &rel.blocking {
                 if let Some(filename) = number_to_filename.get(number) {
                     let target_dir = deps_dir.join(format!("blocks-{other}"));
@@ -700,7 +1063,11 @@ fn write_deps(
     }
     std::fs::write(deps_markdown_path, deps_md)?;
 
-    Ok(if deps_dir_created { Some(deps_dir) } else { None })
+    Ok(if deps_dir_created {
+        Some(deps_dir)
+    } else {
+        None
+    })
 }
 
 fn render_labels_markdown(repo: &str, labels: &[RepoLabel]) -> String {
@@ -774,14 +1141,20 @@ fn sanitize_title_for_filename(title: &str) -> String {
         })
         .collect();
     let squashed = replaced.split_whitespace().collect::<Vec<_>>().join(" ");
-    squashed.chars().take(80).collect::<String>().trim().to_string()
+    squashed
+        .chars()
+        .take(80)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 fn render_issue(issue: &Issue) -> String {
     let labels = if issue.labels.is_empty() {
         "none".to_string()
     } else {
-        issue.labels
+        issue
+            .labels
             .iter()
             .map(|l| l.name.as_str())
             .collect::<Vec<_>>()
@@ -790,7 +1163,8 @@ fn render_issue(issue: &Issue) -> String {
     let assignees = if issue.assignees.is_empty() {
         "none".to_string()
     } else {
-        issue.assignees
+        issue
+            .assignees
             .iter()
             .map(|a| a.login.as_str())
             .collect::<Vec<_>>()
@@ -802,7 +1176,11 @@ fn render_issue(issue: &Issue) -> String {
         .map(|m| m.title.as_str())
         .unwrap_or("none");
     let body = issue.body.as_deref().unwrap_or("").trim();
-    let body = if body.is_empty() { "(no description)" } else { body };
+    let body = if body.is_empty() {
+        "(no description)"
+    } else {
+        body
+    };
 
     let mut content = String::new();
     content.push_str(&format!("# #{}: {}\n\n", issue.number, issue.title));
@@ -962,7 +1340,7 @@ fn parse_repo_from_remote(remote: &str) -> Result<String> {
         rest
     } else {
         return Err(eyre::eyre!(
-        "bud issues only supports GitHub repositories. Remote origin points to: {remote}"
+            "bud issues only supports GitHub repositories. Remote origin points to: {remote}"
         ));
     };
 

@@ -3,8 +3,8 @@ use rand::prelude::IndexedRandom;
 use std::process::Command;
 
 const EMOJI_POOL: &[&str] = &[
-    "🌵", "🍄", "🦊", "🐙", "🎯", "🔮", "🧊", "🪐", "🦑", "🎪", "🌋", "🦎", "🪸", "🧿",
-    "🫧", "🪬", "🐚", "🦩", "🪻", "🧲", "🪩", "🦠", "🫎", "🪼", "🐋", "🦚", "🪷", "🧬",
+    "🌵", "🍄", "🦊", "🐙", "🎯", "🔮", "🧊", "🪐", "🦑", "🎪", "🌋", "🦎", "🪸", "🧿", "🫧", "🪬",
+    "🐚", "🦩", "🪻", "🧲", "🪩", "🦠", "🫎", "🪼", "🐋", "🦚", "🪷", "🧬",
 ];
 
 fn generate_marker() -> String {
@@ -25,14 +25,17 @@ pub fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
         .args(["display-message", "-t", pane_id, "-p", "#{session_id}"])
         .output()?;
     if !session_output.status.success() {
-        return Err(eyre::eyre!("tmux display-message failed for pane {pane_id}"));
+        return Err(eyre::eyre!(
+            "tmux display-message failed for pane {pane_id}"
+        ));
     }
     let session_id = String::from_utf8(session_output.stdout)?.trim().to_string();
 
     let output = Command::new("tmux")
         .args([
             "list-panes",
-            "-t", &session_id,
+            "-t",
+            &session_id,
             "-s",
             "-F",
             "#{pane_id}\t#{pane_pid}",
@@ -99,7 +102,9 @@ pub fn send_to_pane(pane_id: &str, text: &str) -> Result<()> {
         .args(["send-keys", "-t", pane_id, "C-u"])
         .status()?;
     if !status.success() {
-        return Err(eyre::eyre!("tmux send-keys (C-u) failed for pane {pane_id}"));
+        return Err(eyre::eyre!(
+            "tmux send-keys (C-u) failed for pane {pane_id}"
+        ));
     }
     std::thread::sleep(std::time::Duration::from_millis(200));
 
@@ -107,7 +112,9 @@ pub fn send_to_pane(pane_id: &str, text: &str) -> Result<()> {
         .args(["send-keys", "-t", pane_id, "-l", &tagged])
         .status()?;
     if !status.success() {
-        return Err(eyre::eyre!("tmux send-keys (text) failed for pane {pane_id}"));
+        return Err(eyre::eyre!(
+            "tmux send-keys (text) failed for pane {pane_id}"
+        ));
     }
 
     // Wait for our emoji marker or a paste indicator to appear
@@ -120,7 +127,9 @@ pub fn send_to_pane(pane_id: &str, text: &str) -> Result<()> {
         .args(["send-keys", "-t", pane_id, "C-m"])
         .status()?;
     if !status.success() {
-        return Err(eyre::eyre!("tmux send-keys (C-m) failed for pane {pane_id}"));
+        return Err(eyre::eyre!(
+            "tmux send-keys (C-m) failed for pane {pane_id}"
+        ));
     }
 
     Ok(())
@@ -168,7 +177,10 @@ pub fn find_other_pane(my_pane_id: &str) -> Result<Pane> {
             return Ok(pane);
         }
         if child_names.is_empty() {
-            details.push(format!("  {}: child processes: no child processes", pane.id));
+            details.push(format!(
+                "  {}: child processes: no child processes",
+                pane.id
+            ));
         } else {
             details.push(format!(
                 "  {}: child processes: [{}]",
