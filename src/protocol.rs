@@ -4,6 +4,8 @@ use facet::Facet;
 pub struct AssignRequest {
     /// The $TMUX_PANE of the requesting agent
     pub source_pane: String,
+    /// The tmux session name of the requesting agent
+    pub session_name: String,
     /// The task content (read from stdin by the CLI)
     pub content: String,
     /// Optional title for the task

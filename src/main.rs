@@ -1,3 +1,5 @@
+mod config;
+mod discord;
 mod hash;
 mod protocol;
 mod server;
@@ -113,16 +115,50 @@ fn pid_path() -> PathBuf {
     PathBuf::from("/tmp/bud.pid")
 }
 
-fn response_dir() -> PathBuf {
+fn response_root_dir() -> PathBuf {
     PathBuf::from("/tmp/bud-responses")
 }
 
-fn request_dir() -> PathBuf {
+fn response_dir(session_name: &str) -> PathBuf {
+    response_root_dir().join(session_name)
+}
+
+fn request_root_dir() -> PathBuf {
     PathBuf::from("/tmp/bud-requests")
+}
+
+fn request_dir(session_name: &str) -> PathBuf {
+    request_root_dir().join(session_name)
+}
+
+fn orphaned_dir() -> PathBuf {
+    PathBuf::from("/tmp/bud-orphaned")
 }
 
 fn log_path() -> PathBuf {
     PathBuf::from("/tmp/bud-server.log")
+}
+
+fn tmux_session_name_for_pane(pane: &str) -> Result<String> {
+    let output = std::process::Command::new("tmux")
+        .args(["display-message", "-t", pane, "-p", "#{session_name}"])
+        .output()?;
+    if !output.status.success() {
+        return Err(eyre::eyre!(
+            "tmux display-message failed for pane {pane}"
+        ));
+    }
+    let session_name = String::from_utf8(output.stdout)?.trim().to_string();
+    if session_name.is_empty() {
+        return Err(eyre::eyre!("tmux returned empty session name"));
+    }
+    Ok(session_name)
+}
+
+fn tmux_session_name() -> Result<String> {
+    let pane = std::env::var("TMUX_PANE")
+        .map_err(|_| eyre::eyre!("TMUX_PANE not set — are you inside tmux?"))?;
+    tmux_session_name_for_pane(&pane)
 }
 
 fn read_stdin() -> Result<String> {
@@ -147,8 +183,8 @@ async fn main() -> Result<()> {
             server::run_server(
                 socket_path(),
                 pid_path(),
-                response_dir(),
-                request_dir(),
+                response_root_dir(),
+                request_root_dir(),
                 log_path(),
             )
                 .await
@@ -162,16 +198,30 @@ async fn main() -> Result<()> {
         Some(Command::Assign { keep, title }) => {
             let pane = std::env::var("TMUX_PANE")
                 .map_err(|_| eyre::eyre!("TMUX_PANE not set — are you inside tmux?"))?;
+            let session_name = tmux_session_name_for_pane(&pane)?;
             let content = read_stdin()?;
             ensure_server_running().await?;
-            client_assign(pane, content, !keep, title).await
+            client_assign(pane, session_name, content, !keep, title).await
         }
         Some(Command::Respond { request_id }) => {
             validate_request_id(&request_id)?;
             let content = read_stdin()?;
+            let session_name = tmux_session_name()?;
+            let request_path = request_dir(&session_name).join(&request_id);
+            if !request_path.exists() {
+                std::fs::create_dir_all(orphaned_dir())?;
+                let orphaned_path = orphaned_dir().join(format!("{request_id}.md"));
+                std::fs::write(&orphaned_path, &content)?;
+                eprintln!(
+                    "No matching request found for {request_id} in session {session_name}."
+                );
+                eprintln!("Response saved to: {}", orphaned_path.display());
+                eprintln!("Ask the user what to do with it.");
+                return Ok(());
+            }
             // Write the response file directly — no RPC needed
-            std::fs::create_dir_all(response_dir())?;
-            let path = response_dir().join(format!("{request_id}.md"));
+            std::fs::create_dir_all(response_dir(&session_name))?;
+            let path = response_dir(&session_name).join(format!("{request_id}.md"));
             std::fs::write(&path, &content)?;
             eprintln!("{}", warmth::responded());
             Ok(())
@@ -220,10 +270,25 @@ async fn ensure_server_running() -> Result<()> {
     ))
 }
 
-async fn client_assign(source_pane: String, content: String, clear: bool, title: Option<String>) -> Result<()> {
+async fn client_assign(
+    source_pane: String,
+    session_name: String,
+    content: String,
+    clear: bool,
+    title: Option<String>,
+) -> Result<()> {
     let binary_hash = hash::binary_hash();
 
-    match assign_once(&source_pane, &content, clear, title.clone(), &binary_hash).await {
+    match assign_once(
+        &source_pane,
+        &session_name,
+        &content,
+        clear,
+        title.clone(),
+        &binary_hash,
+    )
+    .await
+    {
         Ok(request_id) => {
             eprintln!("{}", warmth::assigned());
             eprintln!("Request ID: {request_id}");
@@ -232,12 +297,19 @@ async fn client_assign(source_pane: String, content: String, clear: bool, title:
         Err(first_error) => {
             eprintln!("bud: assign failed: {first_error:?}");
             ensure_server_running().await?;
-            let request_id = assign_once(&source_pane, &content, clear, title, &binary_hash)
-                .await
-                .map_err(|e| {
-                    eprintln!("bud: assign failed after retry: {e:?}");
-                    eyre::eyre!("assign failed after retry: {e:?}")
-                })?;
+            let request_id = assign_once(
+                &source_pane,
+                &session_name,
+                &content,
+                clear,
+                title,
+                &binary_hash,
+            )
+            .await
+            .map_err(|e| {
+                eprintln!("bud: assign failed after retry: {e:?}");
+                eyre::eyre!("assign failed after retry: {e:?}")
+            })?;
             eprintln!("{}", warmth::assigned());
             eprintln!("Request ID: {request_id}");
             Ok(())
@@ -247,6 +319,7 @@ async fn client_assign(source_pane: String, content: String, clear: bool, title:
 
 async fn assign_once(
     source_pane: &str,
+    session_name: &str,
     content: &str,
     clear: bool,
     title: Option<String>,
@@ -262,6 +335,7 @@ async fn assign_once(
     let request_id = client
         .assign(protocol::AssignRequest {
             source_pane: source_pane.to_string(),
+            session_name: session_name.to_string(),
             content: content.to_string(),
             title,
             clear,
@@ -288,7 +362,8 @@ fn validate_request_id(request_id: &str) -> Result<()> {
 
 fn cancel_request(request_id: &str) -> Result<()> {
     validate_request_id(request_id)?;
-    let path = request_dir().join(request_id);
+    let session_name = tmux_session_name()?;
+    let path = request_dir(&session_name).join(request_id);
     if !path.exists() {
         eprintln!("No task with ID {request_id} found.");
         return Ok(());
@@ -300,7 +375,8 @@ fn cancel_request(request_id: &str) -> Result<()> {
 
 fn steer_request(request_id: &str) -> Result<()> {
     validate_request_id(request_id)?;
-    let path = request_dir().join(request_id);
+    let session_name = tmux_session_name()?;
+    let path = request_dir(&session_name).join(request_id);
     let meta = util::read_request_meta(&path)
         .ok_or_else(|| eyre::eyre!("No task with ID {request_id} found."))?;
     let message = read_stdin()?;
@@ -318,7 +394,8 @@ fn steer_request(request_id: &str) -> Result<()> {
 fn update_request(request_id: &str) -> Result<()> {
     validate_request_id(request_id)?;
     let message = read_stdin()?;
-    let path = request_dir().join(request_id);
+    let session_name = tmux_session_name()?;
+    let path = request_dir(&session_name).join(request_id);
     let meta = util::read_request_meta(&path)
         .ok_or_else(|| eyre::eyre!("No task with ID {request_id} found."))?;
     let title_suffix = meta
@@ -327,7 +404,7 @@ fn update_request(request_id: &str) -> Result<()> {
         .map(|title| format!(" ({title})"))
         .unwrap_or_default();
     let update = format!(
-        "📋 Progress update from your buddy on task {request_id}{title_suffix}:\n\n{message}"
+        "📋 Progress update from your buddy on task {request_id}{title_suffix}:\n\n{message}\n\nTo reply to your buddy about this, use:\n\ncat <<'BUDEOF' | bud steer {request_id}\n<your reply here>\nBUDEOF"
     );
     tmux::send_to_pane(&meta.source_pane, &update)?;
     eprintln!(
@@ -339,7 +416,8 @@ fn update_request(request_id: &str) -> Result<()> {
 
 fn show_request(request_id: &str) -> Result<()> {
     validate_request_id(request_id)?;
-    let path = request_dir().join(request_id);
+    let session_name = tmux_session_name()?;
+    let path = request_dir(&session_name).join(request_id);
     let meta = util::read_request_meta(&path)
         .ok_or_else(|| eyre::eyre!("No task with ID {request_id} found."))?;
     let content = util::read_request_content(&path)
@@ -357,7 +435,8 @@ fn show_request(request_id: &str) -> Result<()> {
 
 fn spy_request(request_id: &str) -> Result<()> {
     validate_request_id(request_id)?;
-    let path = request_dir().join(request_id);
+    let session_name = tmux_session_name()?;
+    let path = request_dir(&session_name).join(request_id);
     let meta = util::read_request_meta(&path)
         .ok_or_else(|| eyre::eyre!("No task with ID {request_id} found."))?;
     let pane_content = tmux::capture_pane(&meta.target_pane)?;
@@ -368,8 +447,9 @@ fn spy_request(request_id: &str) -> Result<()> {
 fn list_requests() -> Result<()> {
     use std::time::SystemTime;
 
-    let request_dir = request_dir();
-    let response_dir = response_dir();
+    let session_name = tmux_session_name()?;
+    let request_dir = request_dir(&session_name);
+    let response_dir = response_dir(&session_name);
 
     let entries = match std::fs::read_dir(&request_dir) {
         Ok(entries) => entries,
