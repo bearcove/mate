@@ -95,6 +95,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bud"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "facet",
+ "figue",
+ "roam",
+ "roam-stream",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -829,21 +844,6 @@ dependencies = [
  "facet-json",
  "moire-trace-types",
  "moire-types",
-]
-
-[[package]]
-name = "mucp"
-version = "0.1.0"
-dependencies = [
- "eyre",
- "facet",
- "figue",
- "roam",
- "roam-stream",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]

@@ -46,7 +46,7 @@ impl crate::protocol::Coop for CoopServer {
 
         // Compose the message for the worker
         let message = format!(
-            "[mucp request {request_id}] You have a task. Read it from: {task_file}\n\
+            "[bud request {request_id}] You have a task. Read it from: {task_file}\n\
              When done, write your response to: {}\n\
              Include the request ID '{request_id}' in your response file.",
             response_file.display()
@@ -83,7 +83,7 @@ pub async fn run_server(
         .with_writer(log_file)
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("mucp=info".parse()?),
+                .add_directive("bud=info".parse()?),
         )
         .init();
 
@@ -98,7 +98,7 @@ pub async fn run_server(
     // Write PID file
     std::fs::write(&pid_path, std::process::id().to_string())?;
 
-    info!("mucp server starting on {}", socket_path.display());
+    info!("bud server starting on {}", socket_path.display());
     info!("watching for responses in {}", response_dir.display());
 
     let listener = UnixListener::bind(&socket_path)?;
@@ -176,7 +176,7 @@ async fn watch_responses(dir: PathBuf, requests: Arc<Mutex<HashMap<String, Reque
 
                 // Deliver back to the requesting agent's pane
                 let message = format!(
-                    "[mucp response {request_id}] Task complete. Response:\n{response_content}"
+                    "[bud response {request_id}] Task complete. Response:\n{response_content}"
                 );
                 if let Err(e) = tmux::send_to_pane(&request.source_pane, &message) {
                     error!("failed to deliver response to pane {}: {e}", request.source_pane);

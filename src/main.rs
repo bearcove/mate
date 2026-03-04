@@ -16,7 +16,7 @@ struct Args {
 #[derive(Facet, Debug)]
 #[repr(u8)]
 enum Command {
-    /// Start the mucp server in the foreground
+    /// Start the bud server in the foreground
     Server,
     /// Assign a task to another agent
     Assign {
@@ -26,41 +26,41 @@ enum Command {
     },
 }
 
-const MANUAL: &str = r#"mucp - multi-agent cooperation over tmux
+const MANUAL: &str = r#"bud - multi-agent cooperation over tmux
 
 USAGE:
-    mucp                        Show this manual
-    mucp server                 Start the server (usually auto-started)
-    mucp assign <task-file>     Assign a task to another agent
+    bud                        Show this manual
+    bud server                 Start the server (usually auto-started)
+    bud assign <task-file>     Assign a task to another agent
 
 WORKFLOW:
-    1. Write your task to a file, e.g. /tmp/mucp-task-xyz.md
-    2. Run: mucp assign /tmp/mucp-task-xyz.md
+    1. Write your task to a file, e.g. /tmp/bud-task-xyz.md
+    2. Run: bud assign /tmp/bud-task-xyz.md
     3. The server delivers the task to the worker agent's tmux pane
     4. The worker writes their response to the file path given to them
     5. The server detects the response and delivers it back to your pane
 
 ENVIRONMENT:
     TMUX_PANE    Automatically set by tmux. Used to identify your pane.
-    MUCP_SOCKET  Override the server socket path (default: /tmp/mucp.sock)
+    BUD_SOCKET  Override the server socket path (default: /tmp/bud.sock)
 "#;
 
 fn socket_path() -> PathBuf {
-    std::env::var("MUCP_SOCKET")
+    std::env::var("BUD_SOCKET")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp/mucp.sock"))
+        .unwrap_or_else(|_| PathBuf::from("/tmp/bud.sock"))
 }
 
 fn pid_path() -> PathBuf {
-    PathBuf::from("/tmp/mucp.pid")
+    PathBuf::from("/tmp/bud.pid")
 }
 
 fn response_dir() -> PathBuf {
-    PathBuf::from("/tmp/mucp-responses")
+    PathBuf::from("/tmp/bud-responses")
 }
 
 fn log_path() -> PathBuf {
-    PathBuf::from("/tmp/mucp-server.log")
+    PathBuf::from("/tmp/bud-server.log")
 }
 
 #[tokio::main]
@@ -105,7 +105,7 @@ async fn ensure_server_running() -> Result<()> {
     }
 
     // Start it
-    eprintln!("mucp: starting server...");
+    eprintln!("bud: starting server...");
     let exe = std::env::current_exe()?;
     let log_file = std::fs::File::create(log_path())?;
     std::process::Command::new(exe)
@@ -122,7 +122,7 @@ async fn ensure_server_running() -> Result<()> {
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    Err(eyre::eyre!("mucp: server failed to start (check {})", log_path().display()))
+    Err(eyre::eyre!("bud: server failed to start (check {})", log_path().display()))
 }
 
 async fn client_assign(source_pane: String, task_file: PathBuf) -> Result<()> {
@@ -145,7 +145,7 @@ async fn client_assign(source_pane: String, task_file: PathBuf) -> Result<()> {
         .await
         .map_err(|e| eyre::eyre!("{e:?}"))?;
 
-    eprintln!("mucp: task assigned (request_id={request_id})");
-    eprintln!("mucp: response will be delivered to your pane when ready");
+    eprintln!("bud: task assigned (request_id={request_id})");
+    eprintln!("bud: response will be delivered to your pane when ready");
     Ok(())
 }
