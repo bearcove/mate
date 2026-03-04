@@ -74,9 +74,6 @@ fn response_dir() -> PathBuf {
     PathBuf::from("/tmp/bud-responses")
 }
 
-fn task_dir() -> PathBuf {
-    PathBuf::from("/tmp/bud-tasks")
-}
 
 fn log_path() -> PathBuf {
     PathBuf::from("/tmp/bud-server.log")
@@ -101,7 +98,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some(Command::Server) => {
-            server::run_server(socket_path(), pid_path(), response_dir(), task_dir(), log_path())
+            server::run_server(socket_path(), pid_path(), response_dir(), log_path())
                 .await
         }
         Some(Command::Assign { keep }) => {

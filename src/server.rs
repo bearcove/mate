@@ -16,8 +16,6 @@ struct Request {
 #[derive(Clone)]
 struct CoopServer {
     requests: Arc<Mutex<HashMap<String, Request>>>,
-    response_dir: PathBuf,
-    task_dir: PathBuf,
 }
 
 impl crate::protocol::Coop for CoopServer {
@@ -34,14 +32,6 @@ impl crate::protocol::Coop for CoopServer {
             binary_hash: _,
         } = req;
         let request_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-        let response_file = self.response_dir.join(format!("{request_id}.md"));
-        let task_file = self.task_dir.join(format!("{request_id}.md"));
-
-        // Write the task content to a file
-        if let Err(e) = std::fs::write(&task_file, &content) {
-            error!("failed to write task file {}: {e}", task_file.display());
-            return Err(e.to_string());
-        }
 
         // Find the other pane to send to
         let target = match tmux::find_other_pane(&source_pane) {
@@ -68,26 +58,20 @@ impl crate::protocol::Coop for CoopServer {
 
         let message = format!(
             "{}\n\n\
-             The full assignment is at: {}\n\
-             Please read it, then do your best to help.\n\n\
+             {content}\n\n\
              IMPORTANT: When you're done, you MUST send your response by executing \
              this shell command (use your Bash/shell tool — do NOT just print it as text):\n\n\
              cat <<'BUDEOF' | bud respond {request_id}\n\
              <put your full response here>\n\
              BUDEOF",
             crate::warmth::greeting(),
-            task_file.display()
         );
 
         if let Err(e) = tmux::send_to_pane(&target.id, &message) {
             error!("failed to send to pane {}: {e}", target.id);
         }
 
-        info!(
-            "assigned request {request_id}: {} -> pane {}",
-            task_file.display(),
-            target.id
-        );
+        info!("assigned request {request_id} -> pane {}", target.id);
         Ok(request_id)
     }
 }
@@ -96,7 +80,6 @@ pub async fn run_server(
     socket_path: PathBuf,
     pid_path: PathBuf,
     response_dir: PathBuf,
-    task_dir: PathBuf,
     log_path: PathBuf,
 ) -> Result<()> {
     let log_file = std::fs::File::create(&log_path)?;
@@ -109,7 +92,6 @@ pub async fn run_server(
         .init();
 
     std::fs::create_dir_all(&response_dir)?;
-    std::fs::create_dir_all(&task_dir)?;
 
     if socket_path.exists() {
         std::fs::remove_file(&socket_path)?;
@@ -134,13 +116,9 @@ pub async fn run_server(
     loop {
         let (stream, _) = listener.accept().await?;
         let reqs = requests.clone();
-        let resp_dir = response_dir.clone();
-        let t_dir = task_dir.clone();
         tokio::spawn(async move {
             let server = CoopServer {
                 requests: reqs,
-                response_dir: resp_dir,
-                task_dir: t_dir,
             };
             let result = roam::acceptor(StreamLink::unix(stream))
                 .establish::<CoopClient>(CoopDispatcher::new(server))
@@ -187,7 +165,7 @@ async fn watch_responses(dir: PathBuf, requests: Arc<Mutex<HashMap<String, Reque
                 seen.insert(path.clone());
 
                 let body = match std::fs::read_to_string(&path) {
-                    Ok(content) => summarize_response(&content, &path),
+                    Ok(content) => content,
                     Err(_) => "(could not read response file)".to_string(),
                 };
                 let message = format!(
@@ -207,19 +185,3 @@ async fn watch_responses(dir: PathBuf, requests: Arc<Mutex<HashMap<String, Reque
     }
 }
 
-fn summarize_response(content: &str, response_path: &std::path::Path) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    let n = lines.len();
-    if n <= 20 {
-        return content.to_string();
-    }
-    let head = &lines[..10];
-    let tail = &lines[n - 10..];
-    let cut = n - 20;
-    format!(
-        "{}\n[{cut} lines cut — complete response at {}]\n{}",
-        head.join("\n"),
-        response_path.display(),
-        tail.join("\n")
-    )
-}
