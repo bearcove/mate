@@ -120,26 +120,66 @@ pub fn send_to_pane(pane_id: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
-fn is_agent_pane(p: &Pane) -> bool {
-    use sysinfo::{Pid, ProcessesToUpdate, System};
+fn child_process_names(sys: &sysinfo::System, pane: &Pane) -> Vec<String> {
+    use sysinfo::Pid;
 
-    let mut sys = System::new();
-    let parent = Pid::from_u32(p.pid);
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let parent = Pid::from_u32(pane.pid);
+    let mut names: Vec<String> = sys
+        .processes()
+        .values()
+        .filter(|proc| proc.parent() == Some(parent))
+        .filter_map(|proc| proc.name().to_str().map(ToString::to_string))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
 
-    sys.processes().values().any(|proc| {
-        proc.parent() == Some(parent)
-            && matches!(proc.name().to_str(), Some("claude" | "codex"))
-    })
+fn is_agent_pane(child_names: &[String]) -> bool {
+    child_names
+        .iter()
+        .any(|name| matches!(name.as_str(), "claude" | "codex"))
 }
 
 /// Find a pane in the same session that is running an agent.
 pub fn find_other_pane(my_pane_id: &str) -> Result<Pane> {
+    use sysinfo::{ProcessesToUpdate, System};
+
     let panes = list_panes(my_pane_id)?;
-    panes
-        .into_iter()
-        .find(|p| {
-            p.id != my_pane_id && is_agent_pane(p)
-        })
-        .ok_or_else(|| eyre::eyre!("no claude or codex pane found — is your buddy running?"))
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+
+    let mut other_panes = 0usize;
+    let mut details: Vec<String> = Vec::new();
+
+    for pane in panes {
+        if pane.id == my_pane_id {
+            continue;
+        }
+        other_panes += 1;
+        let child_names = child_process_names(&sys, &pane);
+        if is_agent_pane(&child_names) {
+            return Ok(pane);
+        }
+        if child_names.is_empty() {
+            details.push(format!("  {}: child processes: no child processes", pane.id));
+        } else {
+            details.push(format!(
+                "  {}: child processes: [{}]",
+                pane.id,
+                child_names.join(", ")
+            ));
+        }
+    }
+
+    if details.is_empty() {
+        return Err(eyre::eyre!(
+            "no claude or codex pane found in {other_panes} other panes:\n  (no panes to inspect)\nIs your buddy running?"
+        ));
+    }
+
+    Err(eyre::eyre!(
+        "no claude or codex pane found in {other_panes} other panes:\n{}\nIs your buddy running?",
+        details.join("\n")
+    ))
 }
