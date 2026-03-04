@@ -16,6 +16,7 @@ struct Request {
 #[derive(Clone)]
 struct CoopServer {
     requests: Arc<Mutex<HashMap<String, Request>>>,
+    request_dir: PathBuf,
 }
 
 impl crate::protocol::Coop for CoopServer {
@@ -32,6 +33,7 @@ impl crate::protocol::Coop for CoopServer {
             binary_hash: _,
         } = req;
         let request_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+        let source_pane_for_file = source_pane.clone();
 
         // Find the other pane to send to
         let target = match tmux::find_other_pane(&source_pane) {
@@ -47,6 +49,15 @@ impl crate::protocol::Coop for CoopServer {
             .lock()
             .await
             .insert(request_id.clone(), Request { source_pane });
+        let request_path = self.request_dir.join(&request_id);
+        if let Err(e) = std::fs::write(&request_path, &source_pane_for_file) {
+            self.requests.lock().await.remove(&request_id);
+            return Err(format!(
+                "failed to persist request {} to {}: {e}",
+                request_id,
+                request_path.display()
+            ));
+        }
 
         // Optionally clear the worker's context first
         if clear {
@@ -70,6 +81,14 @@ impl crate::protocol::Coop for CoopServer {
         if let Err(e) = tmux::send_to_pane(&target.id, &message) {
             error!("failed to send to pane {}: {e}", target.id);
             self.requests.lock().await.remove(&request_id);
+            if let Err(remove_err) = std::fs::remove_file(&request_path) {
+                if remove_err.kind() != std::io::ErrorKind::NotFound {
+                    error!(
+                        "failed to remove request file {}: {remove_err}",
+                        request_path.display()
+                    );
+                }
+            }
             return Err(format!("failed to send to pane {}: {e}", target.id));
         }
 
@@ -82,6 +101,7 @@ pub async fn run_server(
     socket_path: PathBuf,
     pid_path: PathBuf,
     response_dir: PathBuf,
+    request_dir: PathBuf,
     log_path: PathBuf,
 ) -> Result<()> {
     let log_file = std::fs::File::create(&log_path)?;
@@ -94,6 +114,7 @@ pub async fn run_server(
         .init();
 
     std::fs::create_dir_all(&response_dir)?;
+    std::fs::create_dir_all(&request_dir)?;
 
     if socket_path.exists() {
         std::fs::remove_file(&socket_path)?;
@@ -109,18 +130,21 @@ pub async fn run_server(
 
     // Spawn response watcher
     let watch_requests = requests.clone();
-    let watch_dir = response_dir.clone();
+    let watch_response_dir = response_dir.clone();
+    let watch_request_dir = request_dir.clone();
     tokio::spawn(async move {
-        watch_responses(watch_dir, watch_requests).await;
+        watch_responses(watch_response_dir, watch_request_dir, watch_requests).await;
     });
 
     // Accept connections
     loop {
         let (stream, _) = listener.accept().await?;
         let reqs = requests.clone();
+        let server_request_dir = request_dir.clone();
         tokio::spawn(async move {
             let server = CoopServer {
                 requests: reqs,
+                request_dir: server_request_dir,
             };
             let result = roam::acceptor(StreamLink::unix(stream))
                 .establish::<CoopClient>(CoopDispatcher::new(server))
@@ -137,52 +161,65 @@ pub async fn run_server(
     }
 }
 
-async fn watch_responses(dir: PathBuf, requests: Arc<Mutex<HashMap<String, Request>>>) {
-    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-
+async fn watch_responses(
+    response_dir: PathBuf,
+    request_dir: PathBuf,
+    requests: Arc<Mutex<HashMap<String, Request>>>,
+) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        let entries = match std::fs::read_dir(&dir) {
+        let entries = match std::fs::read_dir(&response_dir) {
             Ok(e) => e,
             Err(_) => continue,
         };
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if seen.contains(&path) {
-                continue;
-            }
-
             let request_id = match path.file_stem().and_then(|s| s.to_str()) {
                 Some(id) => id.to_string(),
                 None => continue,
             };
 
-            let request = {
+            let in_memory_request = {
                 let mut reqs = requests.lock().await;
                 reqs.remove(&request_id)
             };
-            if let Some(request) = request {
-                seen.insert(path.clone());
-
-                let body = match std::fs::read_to_string(&path) {
-                    Ok(content) => content,
-                    Err(_) => "(could not read response file)".to_string(),
-                };
-                let message = format!(
-                    "{}\n{body}",
-                    crate::warmth::delivered()
-                );
-                if let Err(e) = tmux::send_to_pane(&request.source_pane, &message) {
-                    error!(
-                        "failed to deliver response to pane {}: {e}",
-                        request.source_pane
-                    );
+            let request_path = request_dir.join(&request_id);
+            let source_pane = if let Some(request) = in_memory_request {
+                request.source_pane
+            } else {
+                match std::fs::read_to_string(&request_path) {
+                    Ok(source_pane) => source_pane.trim().to_string(),
+                    Err(_) => continue,
                 }
+            };
 
-                info!("delivered response for request {request_id}");
+            let body = match std::fs::read_to_string(&path) {
+                Ok(content) => content,
+                Err(_) => "(could not read response file)".to_string(),
+            };
+            let message = format!("{}\n{body}", crate::warmth::delivered());
+            if let Err(e) = tmux::send_to_pane(&source_pane, &message) {
+                error!(
+                    "failed to deliver response to pane {}: {e}",
+                    source_pane
+                );
+                continue;
             }
+
+            if let Err(e) = std::fs::remove_file(&request_path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    error!("failed to remove request file {}: {e}", request_path.display());
+                }
+            }
+            if let Err(e) = std::fs::remove_file(&path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    error!("failed to remove response file {}: {e}", path.display());
+                }
+            }
+
+            info!("delivered response for request {request_id}");
         }
     }
 }
