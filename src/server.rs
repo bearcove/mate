@@ -2,12 +2,15 @@ use crate::protocol::{CoopClient, CoopDispatcher};
 use crate::tmux;
 use eyre::Result;
 use roam_stream::StreamLink;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use tracing::{error, info};
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 struct Request {
     source_pane: String,
@@ -166,8 +169,70 @@ async fn watch_responses(
     request_dir: PathBuf,
     requests: Arc<Mutex<HashMap<String, Request>>>,
 ) {
+    let mut timeout_notified: HashSet<String> = HashSet::new();
+
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let mut active_request_ids: HashSet<String> = HashSet::new();
+        if let Ok(request_entries) = std::fs::read_dir(&request_dir) {
+            for entry in request_entries.flatten() {
+                let path = entry.path();
+                match entry.file_type() {
+                    Ok(file_type) if file_type.is_file() => {}
+                    _ => continue,
+                }
+
+                let request_id = match path.file_name().and_then(|s| s.to_str()) {
+                    Some(id) => id.to_string(),
+                    None => continue,
+                };
+                active_request_ids.insert(request_id.clone());
+
+                let response_path = response_dir.join(format!("{request_id}.md"));
+                if response_path.exists() || timeout_notified.contains(&request_id) {
+                    continue;
+                }
+
+                let metadata = match std::fs::metadata(&path) {
+                    Ok(metadata) => metadata,
+                    Err(_) => continue,
+                };
+                let created_or_modified = metadata
+                    .created()
+                    .ok()
+                    .or_else(|| metadata.modified().ok());
+                let age = match created_or_modified
+                    .and_then(|timestamp| SystemTime::now().duration_since(timestamp).ok())
+                {
+                    Some(age) => age,
+                    None => continue,
+                };
+
+                if age <= REQUEST_TIMEOUT {
+                    continue;
+                }
+
+                let source_pane = match std::fs::read_to_string(&path) {
+                    Ok(source_pane) => source_pane.trim().to_string(),
+                    Err(_) => continue,
+                };
+                let message = format!(
+                    "⏰ Hey captain — your task {request_id} has been pending for {}. Your buddy might be stuck!",
+                    format_age(age)
+                );
+                if let Err(e) = tmux::send_to_pane(&source_pane, &message) {
+                    error!(
+                        "failed to deliver timeout notification for request {} to pane {}: {e}",
+                        request_id, source_pane
+                    );
+                    continue;
+                }
+
+                timeout_notified.insert(request_id);
+            }
+        }
+        timeout_notified.retain(|id| active_request_ids.contains(id));
 
         let entries = match std::fs::read_dir(&response_dir) {
             Ok(e) => e,
@@ -216,6 +281,7 @@ async fn watch_responses(
             {
                 error!("failed to remove request file {}: {e}", request_path.display());
             }
+            timeout_notified.remove(&request_id);
             if let Err(e) = std::fs::remove_file(&path)
                 && e.kind() != std::io::ErrorKind::NotFound
             {
@@ -224,5 +290,18 @@ async fn watch_responses(
 
             info!("delivered response for request {request_id}");
         }
+    }
+}
+
+fn format_age(age: Duration) -> String {
+    let secs = age.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3_600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3_600)
+    } else {
+        format!("{}d", secs / 86_400)
     }
 }
