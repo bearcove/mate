@@ -39,6 +39,13 @@ receive results as regular chat messages.
 bud                              Show the manual
 bud server                       Start the server (usually auto-started)
 bud list                         List pending/in-flight requests
+bud show <id>                    Show full task content for a request
+bud spy <id>                     Peek at buddy's pane
+bud cancel <id>                  Cancel a pending request
+bud nudge <id>                   Remind buddy about a pending request
+bud retry <id>                   Reassign a request with a new ID
+cat <<'EOF' | bud steer <id>     Send captain-to-buddy clarification
+cat <<'EOF' | bud update <id>    Send buddy-to-captain progress update
 cat <<'EOF' | bud assign         Assign a task (clears buddy context)
 cat <<'EOF' | bud assign --keep  Assign, keeping buddy's context
 cat <<'EOF' | bud assign --title "..."  Assign with an optional title
@@ -69,13 +76,16 @@ why discovery failed.
 These are intentional choices, not bugs:
 
 - **One connection per assign**: Each `bud assign` opens a new roam connection.
-  The server-side task parks with `pending().await` to keep the session alive.
-  This is fine for a local dev tool doing a few requests per session — connection
-  count stays bounded by usage, not by time.
+  Server-side sessions are dropped after 5 minutes of idle time to avoid
+  accumulating dead connections.
 
 - **Response files in /tmp**: Responses are written to `/tmp/bud-responses/`.
   On a shared machine this is spoofable. Bud is a local dev tool — if you're
   running it on a shared server, move state to `$XDG_RUNTIME_DIR`.
+
+- **Request state in per-request directories**: Pending tasks are persisted in
+  `/tmp/bud-requests/<id>/` with `meta` (source pane, target pane, optional title)
+  and `content` (full task body). This allows pending tasks to survive server restarts.
 
 - **Notify-based response watching with polling fallback**: Bud watches
   `/tmp/bud-responses/` with `notify` for near-instant delivery. If filesystem
@@ -96,8 +106,9 @@ These are intentional choices, not bugs:
   pasting. The buddy pane is dedicated to bud — there's no user-typed input to
   preserve.
 
-- **Timeout notifications**: If a request has no response after 10 minutes,
-  Bud sends the captain a one-time “your buddy might be stuck” notification.
+- **Staleness-based timeout notifications**: Instead of request age, Bud samples
+  buddy pane content every 30s and notifies once when a pane stays unchanged for
+  2 minutes. The notification includes a pane-content dump for quick diagnosis.
 
 ## Requirements
 
