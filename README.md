@@ -38,8 +38,10 @@ receive results as regular chat messages.
 ```
 bud                              Show the manual
 bud server                       Start the server (usually auto-started)
+bud list                         List pending/in-flight requests
 cat <<'EOF' | bud assign         Assign a task (clears buddy context)
 cat <<'EOF' | bud assign --keep  Assign, keeping buddy's context
+cat <<'EOF' | bud assign --title "..."  Assign with an optional title
 cat <<'EOF' | bud respond <id>   Respond to a task (buddies use this)
 ```
 
@@ -58,7 +60,9 @@ landed before submitting with Enter.
 Bud finds buddy panes by inspecting child processes of each tmux pane shell
 using `sysinfo`. Only panes running a `claude` or `codex` binary are considered.
 Pane discovery is scoped to the caller's tmux session, so multiple captain/buddy
-pairs can run in separate sessions without interfering.
+pairs can run in separate sessions without interfering. If no buddy is found,
+the error now lists inspected panes and their child process names to help debug
+why discovery failed.
 
 ## Design decisions
 
@@ -72,6 +76,10 @@ These are intentional choices, not bugs:
 - **Response files in /tmp**: Responses are written to `/tmp/bud-responses/`.
   On a shared machine this is spoofable. Bud is a local dev tool — if you're
   running it on a shared server, move state to `$XDG_RUNTIME_DIR`.
+
+- **Notify-based response watching with polling fallback**: Bud watches
+  `/tmp/bud-responses/` with `notify` for near-instant delivery. If filesystem
+  notifications fail, it falls back to periodic polling.
 
 - **8-char request IDs**: First 8 hex chars of a UUID. 4 billion possibilities.
   Collision risk is negligible for local interactive use.
@@ -87,6 +95,9 @@ These are intentional choices, not bugs:
 - **C-u before paste**: `send_to_pane` sends C-u to clear the input line before
   pasting. The buddy pane is dedicated to bud — there's no user-typed input to
   preserve.
+
+- **Timeout notifications**: If a request has no response after 10 minutes,
+  Bud sends the captain a one-time “your buddy might be stuck” notification.
 
 ## Requirements
 
