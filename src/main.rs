@@ -1,3 +1,4 @@
+mod hash;
 mod protocol;
 mod server;
 mod tmux;
@@ -169,6 +170,29 @@ async fn ensure_server_running() -> Result<()> {
 }
 
 async fn client_assign(source_pane: String, content: String, clear: bool) -> Result<()> {
+    let binary_hash = hash::binary_hash();
+
+    match assign_once(&source_pane, &content, clear, &binary_hash).await {
+        Ok(_) => {
+            eprintln!("{}", warmth::assigned());
+            Ok(())
+        }
+        Err(first_error) => {
+            eprintln!("bud: assign failed: {first_error:?}");
+            ensure_server_running().await?;
+            assign_once(&source_pane, &content, clear, &binary_hash)
+                .await
+                .map_err(|e| {
+                    eprintln!("bud: assign failed after retry: {e:?}");
+                    eyre::eyre!("assign failed after retry: {e:?}")
+                })?;
+            eprintln!("{}", warmth::assigned());
+            Ok(())
+        }
+    }
+}
+
+async fn assign_once(source_pane: &str, content: &str, clear: bool, binary_hash: &str) -> Result<String> {
     use roam_stream::StreamLink;
 
     let stream = tokio::net::UnixStream::connect(socket_path()).await?;
@@ -176,18 +200,15 @@ async fn client_assign(source_pane: String, content: String, clear: bool) -> Res
         .establish::<protocol::CoopClient>(())
         .await?;
 
-    let _request_id = client
+    let request_id = client
         .assign(protocol::AssignRequest {
-            source_pane,
-            content,
+            source_pane: source_pane.to_string(),
+            content: content.to_string(),
             clear,
+            binary_hash: binary_hash.to_string(),
         })
         .await
-        .map_err(|e| {
-            eprintln!("bud: assign failed: {e:?}");
-            eyre::eyre!("assign failed: {e:?}")
-        })?;
+        .map_err(|e| eyre::eyre!("{e:?}"))?;
 
-    eprintln!("{}", warmth::assigned());
-    Ok(())
+    Ok(request_id)
 }

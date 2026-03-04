@@ -22,10 +22,16 @@ struct CoopServer {
 
 impl crate::protocol::Coop for CoopServer {
     async fn assign(&self, req: crate::protocol::AssignRequest) -> Result<String, String> {
+        if req.binary_hash != crate::hash::binary_hash() {
+            info!("binary changed, shutting down for upgrade");
+            std::process::exit(0);
+        }
+
         let crate::protocol::AssignRequest {
             source_pane,
             content,
             clear,
+            binary_hash: _,
         } = req;
         let request_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
         let response_file = self.response_dir.join(format!("{request_id}.md"));

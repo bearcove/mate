@@ -8,6 +8,8 @@ pub struct AssignRequest {
     pub content: String,
     /// Whether to send /clear to the worker before the task
     pub clear: bool,
+    /// Fingerprint of the client binary used to detect upgrades
+    pub binary_hash: String,
 }
 
 #[roam::service]
