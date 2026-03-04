@@ -45,8 +45,6 @@ bud cancel <id>                  Cancel a pending request
 bud wait <id>                    Wait for a response (default 90s timeout)
 bud wait <id> --timeout <secs>   Wait with custom timeout
 bud issues                       Sync issues to /tmp/bud-issues from cwd repo
-bud issue-create                 Process issue drafts in /tmp/bud-issues/.../new
-bud issue-edit                   Push local edits in all/ back to GitHub
 cat <<'EOF' | bud steer <id>     Send captain-to-buddy clarification
 cat <<'EOF' | bud update <id>    Send buddy-to-captain progress update
 cat <<'EOF' | bud assign                 Assign a task (clears buddy context)
@@ -70,10 +68,9 @@ cat <<'EOF' | bud respond <id>           Respond to a task (buddies use this)
   - `.snapshots/`: stored snapshots for change detection
 - Reference files:
   - `INDEX.md`, `DEPS.md`, `LABELS.md`, `MILESTONES.md`
-- `bud issues` also processes new issue drafts before syncing:
-  - edit/create files in `new/` using `new/TEMPLATE.md` format
-  - `bud issues` will create GitHub issues (with labels/milestones auto-created)
-  - `bud issue-create` is a manual fallback for only processing drafts
+- `bud issues` processes drafts and edits before syncing:
+  - create files in `new/` using `new/TEMPLATE.md` format → auto-created on next sync
+  - edit files in `all/` → changes pushed to GitHub on next sync (compared against `.snapshots/`)
 - To assign with issue context, use:
   - `cat <<'EOF' | bud assign --issue 42`
   - the issue file content is injected into the assignment message with reminder text.

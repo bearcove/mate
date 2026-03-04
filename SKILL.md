@@ -17,16 +17,10 @@ so you can review, create, and assign issues without leaving your tmux workflow.
 
 - `bud issues`
   - infers the repo from `git remote origin`
+  - pushes local edits (compares `all/` against `.snapshots/`)
+  - creates issues from drafts in `new/`
   - fetches issues from GitHub
   - generates local files and indexes under `/tmp/bud-issues/<owner>/<repo>/`
-  - processes `new/` drafts before completing the sync
-- `bud issue-create`
-  - manual fallback to process `new/*.md` drafts only
-  - auto-creates missing labels and milestones before creating issues
-- `bud issue-edit`
-  - pushes local edits in `all/` back to GitHub
-  - compares files against `.snapshots/` to detect changes
-  - only updates changed fields (title, body, labels, milestone, assignees)
 - `bud assign` and `bud assign --issue <number>`
   - sends tasks to the buddy
   - `--issue` injects full synced issue content and adds a commit-reference reminder
@@ -81,7 +75,7 @@ EOF
 1. Create a draft in `new/` using the existing `TEMPLATE.md`.
 2. Put metadata in the top block (`**Labels:**`, `**Milestone:**`, `**Assignees:**`)
    and write the issue body below the `---` separator.
-3. Run `bud issues` (auto creation) or `bud issue-create` (manual only).
+3. Run `bud issues` — drafts are created and edits are pushed before syncing.
 
 ## Working flow for captains and buddies
 
