@@ -48,11 +48,11 @@ pub struct PaneState {
     pub agent_type: Option<AgentType>,
     pub state: AgentState,
     pub model: Option<String>,
-    /// Percentage of context window remaining (0.0 - 100.0).
+    /// Percentage of context window remaining (0-100).
     /// Computed at parse time:
-    ///   - Claude: 100.0 - (tokens_used as f64 * 100.0 / 200_000.0)
+    ///   - Claude: 100 - ((tokens_used * 100) / 200_000)
     ///   - Codex: parsed directly from "98% left"
-    pub context_remaining: Option<f64>,
+    pub context_remaining_percent: Option<u8>,
     pub activity: Option<String>,
 }
 ```
@@ -64,7 +64,15 @@ Two delivery primitives. One observation primitive.
 ```rust
 trait Pane: Send + Sync {
     /// Submit a slash command (e.g. "/clear", "/captain", "/mate").
-    /// Single line. No paste detection. Just type and enter.
+    /// Single line only.
+    ///
+    /// Delivery must use the same safety pipeline as chat_message:
+    /// - exit copy mode best-effort
+    /// - clear pending input (C-u)
+    /// - send text
+    /// - wait for confirmation by observing the exact command in pane capture
+    /// - submit with C-m
+    /// - optional bounded retry for transient tmux failures
     async fn slash_command(&self, command: &str) -> Result<()>;
 
     /// Submit a chat message as user input to the agent.
@@ -83,8 +91,8 @@ about delivery and observation.
 
 **TmuxPane** (production)
 - Holds a `PaneId`.
-- `slash_command`: `send-keys -l "/clear"` + `send-keys C-m`. No emoji markers,
-  no paste wait.
+- `slash_command`: uses the hardened delivery path (copy-mode exit, C-u, send,
+  wait for exact command echo in capture, C-m). No emoji markers.
 - `chat_message`: The current dance — C-u, send-keys with emoji marker,
   wait_for_paste, C-m.
 - `snapshot`: `capture-pane -p` + `parse_pane_content`.
@@ -107,12 +115,17 @@ struct PaneInfo {
     pub session: SessionName,
 }
 
+struct DiscoveredPane {
+    pub info: PaneInfo,
+    pub pane: Arc<dyn Pane>,
+}
+
 trait PaneDiscovery: Send + Sync {
     /// Find a peer agent pane in the same session.
-    async fn find_peer(&self, me: &PaneId) -> Result<Box<dyn Pane>>;
+    async fn find_peer(&self, me: &PaneId) -> Result<Arc<dyn Pane>>;
 
     /// List all panes across all sessions.
-    async fn list_all(&self) -> Result<Vec<(PaneInfo, Box<dyn Pane>)>>;
+    async fn list_all(&self) -> Result<Vec<DiscoveredPane>>;
 }
 ```
 

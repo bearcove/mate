@@ -6,7 +6,7 @@ pub async fn binary_hash() -> String {
         Err(_) => return "0".to_string(),
     };
 
-    let metadata = match tokio::fs::metadata(exe).await {
+    let metadata = match fs_err::tokio::metadata(exe).await {
         Ok(metadata) => metadata,
         Err(_) => return "0".to_string(),
     };

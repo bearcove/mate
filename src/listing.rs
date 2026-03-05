@@ -53,7 +53,7 @@ impl IdleTracker {
 
     async fn load_idle_since(&self, session: &str, pane: &str) -> Option<u64> {
         let path = self.file_path(session, pane);
-        tokio::fs::read_to_string(path)
+        fs_err::tokio::read_to_string(path)
             .await
             .ok()
             .and_then(|value| value.trim().parse().ok())
@@ -69,12 +69,12 @@ impl IdleTracker {
         match idle_since {
             Some(value) => {
                 if let Some(parent) = path.parent() {
-                    tokio::fs::create_dir_all(parent).await?;
+                    fs_err::tokio::create_dir_all(parent).await?;
                 }
-                tokio::fs::write(path, value.to_string()).await?;
+                fs_err::tokio::write(path, value.to_string()).await?;
             }
             None => {
-                let _ = tokio::fs::remove_file(path).await;
+                let _ = fs_err::tokio::remove_file(path).await;
             }
         }
         Ok(())
@@ -342,7 +342,7 @@ pub(crate) async fn list_requests() -> Result<()> {
         .unwrap_or(0);
     let mut idle_tracker = IdleTracker::new(now_unix_secs, paths::idle_tracking_root_dir());
     let request_root = paths::request_root_dir();
-    if let Ok(mut session_entries) = tokio::fs::read_dir(&request_root).await {
+    if let Ok(mut session_entries) = fs_err::tokio::read_dir(&request_root).await {
         while let Ok(Some(session_entry)) = session_entries.next_entry().await {
             let Ok(session_type) = session_entry.file_type().await else {
                 continue;
@@ -354,7 +354,7 @@ pub(crate) async fn list_requests() -> Result<()> {
             let session_name = session_entry.file_name().to_string_lossy().to_string();
             let session_request_dir = session_entry.path();
             let session_response_dir = paths::response_dir(&session_name);
-            let mut request_entries = match tokio::fs::read_dir(&session_request_dir).await {
+            let mut request_entries = match fs_err::tokio::read_dir(&session_request_dir).await {
                 Ok(entries) => entries,
                 Err(_) => continue,
             };
@@ -370,7 +370,7 @@ pub(crate) async fn list_requests() -> Result<()> {
                     .await
                     .map(|meta| (meta.source_pane, meta.target_pane, meta.title))
                     .unwrap_or_else(|| ("(unreadable)".to_string(), "(unknown)".to_string(), None));
-                let age = tokio::fs::metadata(entry.path())
+                let age = fs_err::tokio::metadata(entry.path())
                     .await
                     .ok()
                     .and_then(|meta| meta.created().ok().or_else(|| meta.modified().ok()))
@@ -390,7 +390,7 @@ pub(crate) async fn list_requests() -> Result<()> {
                     None
                 };
                 let response_exists =
-                    if tokio::fs::metadata(session_response_dir.join(format!("{id}.md")))
+                    if fs_err::tokio::metadata(session_response_dir.join(format!("{id}.md")))
                         .await
                         .is_ok()
                     {

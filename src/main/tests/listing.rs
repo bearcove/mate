@@ -7,7 +7,7 @@ use crate::listing::{
 #[tokio::test]
 async fn idle_tracker_updates_and_resets_on_activity() {
     let root = std::env::temp_dir().join(format!("mate-idle-test-{}", uuid::Uuid::new_v4()));
-    tokio::fs::create_dir_all(&root)
+    fs_err::tokio::create_dir_all(&root)
         .await
         .expect("create idle test directory");
 
@@ -49,7 +49,7 @@ async fn idle_tracker_updates_and_resets_on_activity() {
         Some(0)
     );
 
-    tokio::fs::remove_dir_all(&root)
+    fs_err::tokio::remove_dir_all(&root)
         .await
         .expect("remove idle test directory");
 }

@@ -20,7 +20,7 @@ pub(crate) async fn ensure_server_running() -> Result<()> {
     }
 
     let pid_file = crate::paths::pid_path();
-    if let Ok(pid_str) = tokio::fs::read_to_string(&pid_file).await
+    if let Ok(pid_str) = fs_err::tokio::read_to_string(&pid_file).await
         && let Ok(pid) = pid_str.trim().parse::<u32>()
         && pid_is_alive(pid)
     {
@@ -34,16 +34,17 @@ pub(crate) async fn ensure_server_running() -> Result<()> {
     }
 
     // Server not running — clean up stale socket if any
-    if tokio::fs::metadata(&socket).await.is_ok() {
-        let _ = tokio::fs::remove_file(&socket).await;
+    if fs_err::tokio::metadata(&socket).await.is_ok() {
+        let _ = fs_err::tokio::remove_file(&socket).await;
     }
 
     eprintln!("Starting mate server...");
     let exe = std::env::current_exe()?;
-    let log_file = tokio::fs::File::create(crate::paths::log_path())
+    let log_file = fs_err::tokio::File::create(crate::paths::log_path())
         .await?
         .into_std()
-        .await;
+        .await
+        .into_file();
     tokio::process::Command::new(exe)
         .arg("server")
         .stdin(std::process::Stdio::null())

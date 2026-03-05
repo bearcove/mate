@@ -2,13 +2,13 @@ use crate::pane;
 use crate::protocol::{CoopClient, CoopDispatcher};
 use crate::tmux;
 use eyre::Result;
+use fs_err::tokio as fs;
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use roam_stream::StreamLink;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::fs;
 use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
@@ -675,11 +675,12 @@ pub async fn run_server(
     request_root_dir: PathBuf,
     log_path: PathBuf,
 ) -> Result<()> {
-    let log_file = tokio::fs::File::create(&log_path)
+    let log_file = fs_err::tokio::File::create(&log_path)
         .await
         .map_err(|e| eyre::eyre!("failed to create log file {}: {e}", log_path.display()))?
         .into_std()
-        .await;
+        .await
+        .into_file();
 
     tracing_subscriber::fmt()
         .with_writer(log_file)

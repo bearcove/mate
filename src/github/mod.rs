@@ -255,7 +255,7 @@ pub async fn sync_local_issue_edits(repo: &str) -> Result<IssueEditSummary> {
     let all_dir = base_dir.join("all");
     let snapshot_dir = base_dir.join(".snapshots");
 
-    if tokio::fs::metadata(&all_dir)
+    if fs_err::tokio::metadata(&all_dir)
         .await
         .map(|meta| !meta.is_dir())
         .unwrap_or(true)
@@ -265,7 +265,7 @@ pub async fn sync_local_issue_edits(repo: &str) -> Result<IssueEditSummary> {
     }
 
     let mut summary = IssueEditSummary::default();
-    let mut entries = match tokio::fs::read_dir(&all_dir).await {
+    let mut entries = match fs_err::tokio::read_dir(&all_dir).await {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(summary),
         Err(e) => return Err(e.into()),
@@ -286,7 +286,7 @@ pub async fn sync_local_issue_edits(repo: &str) -> Result<IssueEditSummary> {
             continue;
         }
 
-        let edited_content = match tokio::fs::read_to_string(&path).await {
+        let edited_content = match fs_err::tokio::read_to_string(&path).await {
             Ok(content) => content,
             Err(e) => {
                 summary
@@ -308,7 +308,7 @@ pub async fn sync_local_issue_edits(repo: &str) -> Result<IssueEditSummary> {
         };
 
         let snapshot_path = snapshot_dir.join(format!("{}.md", edited.number));
-        let baseline_content = match tokio::fs::read_to_string(&snapshot_path).await {
+        let baseline_content = match fs_err::tokio::read_to_string(&snapshot_path).await {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => {
@@ -364,7 +364,7 @@ pub async fn read_issue_file(repo: &str, number: u64) -> Result<String> {
     let all_dir = issue_repo_dir(repo).join("all");
     let prefix = format!("{number} - ");
 
-    let mut entries = tokio::fs::read_dir(&all_dir).await?;
+    let mut entries = fs_err::tokio::read_dir(&all_dir).await?;
     while let Ok(Some(entry)) = entries.next_entry().await {
         if !entry
             .file_type()
@@ -384,7 +384,7 @@ pub async fn read_issue_file(repo: &str, number: u64) -> Result<String> {
             continue;
         }
 
-        return tokio::fs::read_to_string(entry.path())
+        return fs_err::tokio::read_to_string(entry.path())
             .await
             .map_err(|e| eyre::eyre!("failed to read issue file {}: {e}", entry.path().display()));
     }
@@ -543,7 +543,7 @@ pub async fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSync
     let edit_summary = sync_local_issue_edits(repo).await?;
     trace!("write_issue_files: after sync_local_issue_edits");
     let total_issues = issues.len();
-    if tokio::fs::metadata(&dir).await.is_ok() {
+    if fs_err::tokio::metadata(&dir).await.is_ok() {
         let mut cleaned_paths = 0usize;
         let mut skipped_paths = 0usize;
         let mut removed_dirs = 0usize;
@@ -565,16 +565,16 @@ pub async fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSync
         for path in sync_paths {
             let path = dir.join(path);
             cleaned_paths += 1;
-            if tokio::fs::metadata(&path).await.is_err() {
+            if fs_err::tokio::metadata(&path).await.is_err() {
                 skipped_paths += 1;
                 continue;
             }
-            if tokio::fs::metadata(&path).await?.is_dir() {
+            if fs_err::tokio::metadata(&path).await?.is_dir() {
                 removed_dirs += 1;
-                tokio::fs::remove_dir_all(&path).await?;
+                fs_err::tokio::remove_dir_all(&path).await?;
             } else {
                 removed_files += 1;
-                tokio::fs::remove_file(&path).await?;
+                fs_err::tokio::remove_file(&path).await?;
             }
         }
         trace!(
@@ -589,14 +589,14 @@ pub async fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSync
     let by_updated_dir = dir.join("by-updated");
     let new_dir = dir.join("new");
     let snapshot_dir = dir.join(".snapshots");
-    tokio::fs::create_dir_all(&all_dir).await?;
-    tokio::fs::create_dir_all(&open_dir).await?;
-    tokio::fs::create_dir_all(&closed_dir).await?;
-    tokio::fs::create_dir_all(&by_created_dir).await?;
-    tokio::fs::create_dir_all(&by_updated_dir).await?;
-    tokio::fs::create_dir_all(&new_dir).await?;
-    tokio::fs::create_dir_all(&snapshot_dir).await?;
-    tokio::fs::write(new_dir.join("TEMPLATE.md"), NEW_ISSUE_TEMPLATE).await?;
+    fs_err::tokio::create_dir_all(&all_dir).await?;
+    fs_err::tokio::create_dir_all(&open_dir).await?;
+    fs_err::tokio::create_dir_all(&closed_dir).await?;
+    fs_err::tokio::create_dir_all(&by_created_dir).await?;
+    fs_err::tokio::create_dir_all(&by_updated_dir).await?;
+    fs_err::tokio::create_dir_all(&new_dir).await?;
+    fs_err::tokio::create_dir_all(&snapshot_dir).await?;
+    fs_err::tokio::write(new_dir.join("TEMPLATE.md"), NEW_ISSUE_TEMPLATE).await?;
 
     let mut number_to_filename: BTreeMap<u64, String> = BTreeMap::new();
     let mut open_issues: Vec<&Issue> = Vec::new();
@@ -606,8 +606,8 @@ pub async fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSync
         let filename = issue_filename(issue);
         let issue_content = render_issue(issue);
         number_to_filename.insert(issue.number, filename.clone());
-        tokio::fs::write(all_dir.join(&filename), &issue_content).await?;
-        tokio::fs::write(
+        fs_err::tokio::write(all_dir.join(&filename), &issue_content).await?;
+        fs_err::tokio::write(
             snapshot_dir.join(format!("{}.md", issue.number)),
             issue_content,
         )
@@ -650,14 +650,14 @@ pub async fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSync
     let has_any_labels = issues.iter().any(|issue| !issue.labels.is_empty());
     let labels_dir = if has_any_labels {
         let root = dir.join("labels");
-        tokio::fs::create_dir_all(&root).await?;
+        fs_err::tokio::create_dir_all(&root).await?;
         let mut labels_dirs = 0usize;
         for issue in issues {
             let filename = issue_filename(issue);
             for label in &issue.labels {
                 let label_dir = root.join(sanitize_title_for_filename(&label.name));
                 labels_dirs += 1;
-                tokio::fs::create_dir_all(&label_dir).await?;
+                fs_err::tokio::create_dir_all(&label_dir).await?;
                 create_symlink(&format!("../../all/{filename}"), &label_dir.join(&filename))
                     .await?;
             }
@@ -671,7 +671,7 @@ pub async fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSync
     let has_any_milestones = issues.iter().any(|issue| issue.milestone.is_some());
     let milestones_dir = if has_any_milestones {
         let root = dir.join("milestones");
-        tokio::fs::create_dir_all(&root).await?;
+        fs_err::tokio::create_dir_all(&root).await?;
         let mut milestones_dirs = 0usize;
         for issue in issues {
             let Some(milestone) = issue.milestone.as_ref() else {
@@ -680,7 +680,7 @@ pub async fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSync
             let filename = issue_filename(issue);
             let milestone_dir = root.join(sanitize_title_for_filename(&milestone.title));
             milestones_dirs += 1;
-            tokio::fs::create_dir_all(&milestone_dir).await?;
+            fs_err::tokio::create_dir_all(&milestone_dir).await?;
             create_symlink(
                 &format!("../../all/{filename}"),
                 &milestone_dir.join(&filename),
@@ -698,7 +698,7 @@ pub async fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSync
 
     let index_path = dir.join("INDEX.md");
     trace!("write_issue_files: write index {}", index_path.display());
-    tokio::fs::write(
+    fs_err::tokio::write(
         &index_path,
         render_index(repo, &open_issues, &closed_issues, issues).await,
     )
@@ -726,7 +726,7 @@ pub async fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSync
                 "write_issue_files: write fallback deps {}",
                 deps_markdown_path.display()
             );
-            tokio::fs::write(&deps_markdown_path, deps_md).await?;
+            fs_err::tokio::write(&deps_markdown_path, deps_md).await?;
             None
         }
     };
@@ -737,7 +737,7 @@ pub async fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSync
         labels_markdown_path.display()
     );
     let labels = sync_labels(repo).await?;
-    tokio::fs::write(&labels_markdown_path, render_labels_markdown(repo, &labels)).await?;
+    fs_err::tokio::write(&labels_markdown_path, render_labels_markdown(repo, &labels)).await?;
 
     let milestones_markdown_path = dir.join("MILESTONES.md");
     trace!(
@@ -745,7 +745,7 @@ pub async fn write_issue_files(repo: &str, issues: &[Issue]) -> Result<IssueSync
         milestones_markdown_path.display()
     );
     let milestones = sync_milestones(repo).await?;
-    tokio::fs::write(
+    fs_err::tokio::write(
         &milestones_markdown_path,
         render_milestones_markdown(repo, &milestones),
     )
@@ -1138,7 +1138,7 @@ async fn write_deps(
             for other in &rel.blocked_by {
                 if let Some(filename) = number_to_filename.get(number) {
                     let target_dir = deps_dir.join(format!("blocked-by-{other}"));
-                    tokio::fs::create_dir_all(&target_dir).await?;
+                    fs_err::tokio::create_dir_all(&target_dir).await?;
                     create_symlink(&format!("../../all/{filename}"), &target_dir.join(filename))
                         .await?;
                     deps_dir_created = true;
@@ -1154,7 +1154,7 @@ async fn write_deps(
             for other in &rel.blocking {
                 if let Some(filename) = number_to_filename.get(number) {
                     let target_dir = deps_dir.join(format!("blocks-{other}"));
-                    tokio::fs::create_dir_all(&target_dir).await?;
+                    fs_err::tokio::create_dir_all(&target_dir).await?;
                     create_symlink(&format!("../../all/{filename}"), &target_dir.join(filename))
                         .await?;
                     deps_dir_created = true;
@@ -1213,7 +1213,7 @@ async fn write_deps(
         }
         deps_md.push('\n');
     }
-    tokio::fs::write(deps_markdown_path, deps_md).await?;
+    fs_err::tokio::write(deps_markdown_path, deps_md).await?;
 
     Ok(if deps_dir_created {
         Some(deps_dir)
@@ -1267,8 +1267,8 @@ async fn create_symlink(target: &str, link: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
-        if tokio::fs::metadata(link).await.is_ok() {
-            tokio::fs::remove_file(link).await?;
+        if fs_err::tokio::metadata(link).await.is_ok() {
+            fs_err::tokio::remove_file(link).await?;
         }
         symlink(target, link)?;
         Ok(())

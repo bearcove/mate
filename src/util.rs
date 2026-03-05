@@ -81,7 +81,7 @@ pub async fn write_request(
     title: Option<&str>,
     content: &str,
 ) -> std::io::Result<()> {
-    tokio::fs::create_dir_all(dir).await?;
+    fs_err::tokio::create_dir_all(dir).await?;
 
     let meta = match title {
         Some(title) if !title.trim().is_empty() => {
@@ -90,13 +90,13 @@ pub async fn write_request(
         _ => format!("{source_pane}\n{target_pane}"),
     };
 
-    tokio::fs::write(dir.join("meta"), meta).await?;
-    tokio::fs::write(dir.join("content"), content).await?;
+    fs_err::tokio::write(dir.join("meta"), meta).await?;
+    fs_err::tokio::write(dir.join("content"), content).await?;
     Ok(())
 }
 
 pub async fn read_request_meta(dir: &Path) -> Option<RequestMeta> {
-    let content = tokio::fs::read_to_string(dir.join("meta")).await.ok()?;
+    let content = fs_err::tokio::read_to_string(dir.join("meta")).await.ok()?;
     let mut lines = content.lines();
     let source_pane = lines.next()?.trim().to_string();
     let target_pane = lines.next()?.trim().to_string();
@@ -117,7 +117,9 @@ pub async fn read_request_meta(dir: &Path) -> Option<RequestMeta> {
 
 #[allow(dead_code)] // used by mate retry (coming soon)
 pub async fn read_request_content(dir: &Path) -> Option<String> {
-    tokio::fs::read_to_string(dir.join("content")).await.ok()
+    fs_err::tokio::read_to_string(dir.join("content"))
+        .await
+        .ok()
 }
 
 /// Returns (git_section, show_commit_reminder).

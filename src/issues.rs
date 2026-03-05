@@ -122,7 +122,7 @@ pub(crate) async fn cleanup_created_draft(
     path: &std::path::Path,
 ) -> std::io::Result<DraftCleanupOutcome> {
     trace!("cleanup_created_draft: attempt {}", path.display());
-    match tokio::fs::remove_file(path).await {
+    match fs_err::tokio::remove_file(path).await {
         Ok(()) => {
             trace!("cleanup_created_draft: removed {}", path.display());
             Ok(DraftCleanupOutcome::Removed)
@@ -151,7 +151,7 @@ async fn process_pending_issue_drafts(
 
     let base_dir = github::issue_repo_dir(repo);
     let new_dir = base_dir.join("new");
-    if tokio::fs::metadata(&new_dir)
+    if fs_err::tokio::metadata(&new_dir)
         .await
         .map(|meta| !meta.is_dir())
         .unwrap_or(true)
@@ -161,14 +161,14 @@ async fn process_pending_issue_drafts(
     }
 
     let failed_dir = base_dir.join("failed");
-    tokio::fs::create_dir_all(&failed_dir).await?;
+    fs_err::tokio::create_dir_all(&failed_dir).await?;
 
     let mut total_entries = 0usize;
     let mut filtered_non_file = 0usize;
     let mut filtered_non_md = 0usize;
     let mut filtered_template = 0usize;
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
-    let mut entries = tokio::fs::read_dir(&new_dir).await?;
+    let mut entries = fs_err::tokio::read_dir(&new_dir).await?;
     while let Ok(Some(entry)) = entries.next_entry().await {
         let raw_path = entry.path();
         total_entries += 1;
@@ -216,7 +216,7 @@ async fn process_pending_issue_drafts(
             .and_then(|name| name.to_str())
             .map(std::string::ToString::to_string)
             .unwrap_or_else(String::new);
-        let content = match tokio::fs::read_to_string(&path).await {
+        let content = match fs_err::tokio::read_to_string(&path).await {
             Ok(content) => content,
             Err(e) => {
                 eprintln!("[#38] read failed before read for {}: {e}", path.display());
@@ -373,10 +373,10 @@ async fn process_pending_issue_drafts(
 async fn move_file(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
     use std::io::ErrorKind;
 
-    if tokio::fs::metadata(to).await.is_ok() {
-        tokio::fs::remove_file(to).await?;
+    if fs_err::tokio::metadata(to).await.is_ok() {
+        fs_err::tokio::remove_file(to).await?;
     }
-    if let Err(e) = tokio::fs::rename(from, to).await {
+    if let Err(e) = fs_err::tokio::rename(from, to).await {
         if e.kind() == ErrorKind::NotFound {
             trace!("move_file: source not found {}", from.display());
             return Ok(());
