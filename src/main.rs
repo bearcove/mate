@@ -1372,13 +1372,18 @@ fn list_requests() -> Result<()> {
 }
 
 fn sync_issues_to_pane() -> Result<()> {
+    eprintln!("[TRACE] sync_issues_to_pane: enter");
     let repo = github::infer_repo()?;
     eprintln!("Syncing issues for {repo}...");
 
+    eprintln!("[TRACE] sync_issues_to_pane: before process_pending_issue_drafts");
     let (created, failed) = process_pending_issue_drafts(&repo)?;
 
+    eprintln!("[TRACE] sync_issues_to_pane: before github::sync_issues");
     let issues = github::sync_issues(&repo)?;
+    eprintln!("[TRACE] sync_issues_to_pane: before github::write_issue_files");
     let result = github::write_issue_files(&repo, &issues)?;
+    eprintln!("[TRACE] sync_issues_to_pane: after github::write_issue_files");
 
     let mut summary = String::new();
     if !result.issue_edits_applied.is_empty() {
@@ -1654,10 +1659,26 @@ fn format_missing_draft_message(
 }
 
 fn cleanup_created_draft(path: &std::path::Path) -> std::io::Result<DraftCleanupOutcome> {
+    eprintln!("[TRACE] cleanup_created_draft: attempt {}", path.display());
     match fs_err::remove_file(path) {
-        Ok(()) => Ok(DraftCleanupOutcome::Removed),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(DraftCleanupOutcome::Missing),
-        Err(e) => Err(e),
+        Ok(()) => {
+            eprintln!("[TRACE] cleanup_created_draft: removed {}", path.display());
+            Ok(DraftCleanupOutcome::Removed)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "[TRACE] cleanup_created_draft: missing before remove {}",
+                path.display()
+            );
+            Ok(DraftCleanupOutcome::Missing)
+        }
+        Err(e) => {
+            eprintln!(
+                "[TRACE] cleanup_created_draft: failed remove {} => {e}",
+                path.display()
+            );
+            Err(e)
+        }
     }
 }
 
@@ -1668,25 +1689,54 @@ fn process_pending_issue_drafts(
 
     let base_dir = github::issue_repo_dir(repo);
     let new_dir = base_dir.join("new");
+    eprintln!("[TRACE] process_pending_issue_drafts: base {} new {}", base_dir.display(), new_dir.display());
     if !new_dir.is_dir() {
+        eprintln!("[TRACE] process_pending_issue_drafts: new dir missing");
         return Ok((Vec::new(), Vec::new()));
     }
 
     let failed_dir = base_dir.join("failed");
+    eprintln!("[TRACE] process_pending_issue_drafts: failed_dir {}", failed_dir.display());
     fs_err::create_dir_all(&failed_dir)?;
+    eprintln!("[TRACE] process_pending_issue_drafts: ensured failed_dir");
 
-    let mut paths: Vec<std::path::PathBuf> = fs_err::read_dir(&new_dir)?
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|ft| ft.is_file()))
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "md"))
-        .filter(|entry| entry.file_name().to_string_lossy() != "TEMPLATE.md")
-        .map(|entry| entry.path())
-        .collect();
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    let entries = fs_err::read_dir(&new_dir)?;
+    for entry in entries {
+        let entry = match entry {
+            Ok(value) => value,
+            Err(e) => {
+                eprintln!("[TRACE] process_pending_issue_drafts: read_dir entry error: {e}");
+                continue;
+            }
+        };
+        let raw_path = entry.path();
+        eprintln!("[TRACE] process_pending_issue_drafts: discovered (pre-filter) {}", raw_path.display());
+        if !entry.file_type().is_ok_and(|ft| ft.is_file()) {
+            eprintln!("[TRACE] process_pending_issue_drafts: filtered non-file {}", raw_path.display());
+            continue;
+        }
+        if !raw_path.extension().is_some_and(|ext| ext == "md") {
+            eprintln!("[TRACE] process_pending_issue_drafts: filtered non-md {}", raw_path.display());
+            continue;
+        }
+        if entry.file_name().to_string_lossy() == "TEMPLATE.md" {
+            eprintln!("[TRACE] process_pending_issue_drafts: filtered TEMPLATE {}", raw_path.display());
+            continue;
+        }
+        eprintln!("[TRACE] process_pending_issue_drafts: kept {}", raw_path.display());
+        paths.push(raw_path);
+    }
     paths.sort();
 
     if paths.is_empty() {
+        eprintln!("[TRACE] process_pending_issue_drafts: no drafts");
         return Ok((Vec::new(), Vec::new()));
     }
+    eprintln!(
+        "[TRACE] process_pending_issue_drafts: processing {} draft(s)",
+        paths.len()
+    );
 
     let mut existing_labels = github::sync_labels_set(repo)?;
     let mut existing_milestones = github::sync_milestones_set(repo)?;
@@ -1700,8 +1750,12 @@ fn process_pending_issue_drafts(
             .and_then(|name| name.to_str())
             .map(std::string::ToString::to_string)
             .unwrap_or_else(String::new);
+        eprintln!("[TRACE] process_pending_issue_drafts: reading {}", path.display());
         let content = match fs_err::read_to_string(&path) {
-            Ok(content) => content,
+            Ok(content) => {
+                eprintln!("[TRACE] process_pending_issue_drafts: read ok {}", path.display());
+                content
+            }
             Err(e) => {
                 eprintln!(
                     "[#38] read failed before read for {}: {e}",
@@ -1726,10 +1780,20 @@ fn process_pending_issue_drafts(
         };
 
         eprintln!("[#38] read succeeded for {}", path.display());
+        eprintln!("[TRACE] process_pending_issue_drafts: parse {}", path.display());
         let draft = match github::parse_new_issue(&content) {
             Ok(issue) => issue,
             Err(e) => {
+                eprintln!(
+                    "[TRACE] process_pending_issue_drafts: parse failed {} => {e}",
+                    path.display()
+                );
                 if let Err(move_err) = move_file(&path, &failed_dir.join(&original_name)) {
+                    eprintln!(
+                        "[TRACE] process_pending_issue_drafts: move_file result {} -> {} failed: {move_err}",
+                        path.display(),
+                        failed_dir.join(&original_name).display()
+                    );
                     eprintln!("Failed {original_name}: move_to_failed_failed: {move_err}");
                 }
                 failed.push(PendingIssueFailed {
@@ -1763,6 +1827,10 @@ fn process_pending_issue_drafts(
         }
 
         if let Some(error_message) = prep_error {
+            eprintln!(
+                "[TRACE] process_pending_issue_drafts: prep error for {} => {error_message}",
+                path.display()
+            );
             if let Err(move_err) = move_file(&path, &failed_dir.join(&original_name)) {
                 eprintln!("Failed {original_name}: move_to_failed_failed: {move_err}");
             }
@@ -1776,6 +1844,10 @@ fn process_pending_issue_drafts(
         match github::create_issue(repo, &draft) {
             Ok((number, url)) => {
                 eprintln!("[#38] created issue {} for {}", number, path.display());
+                eprintln!(
+                    "[TRACE] process_pending_issue_drafts: cleanup_created_draft before {}",
+                    path.display()
+                );
                 match cleanup_created_draft(&path) {
                     Ok(DraftCleanupOutcome::Removed) => {}
                     Ok(DraftCleanupOutcome::Missing) => {
@@ -1789,6 +1861,10 @@ fn process_pending_issue_drafts(
                         );
                     }
                     Err(e) => {
+                        eprintln!(
+                            "[TRACE] process_pending_issue_drafts: cleanup failed {} => {e}",
+                            path.display()
+                        );
                         if let Err(move_err) = move_file(&path, &failed_dir.join(&original_name)) {
                             eprintln!("Failed {original_name}: move_to_failed_failed: {move_err}");
                         }
@@ -1800,6 +1876,11 @@ fn process_pending_issue_drafts(
                     }
                 }
                 eprintln!("[#38] cleanup succeeded for {}", path.display());
+                eprintln!(
+                    "[TRACE] process_pending_issue_drafts: created and cleaned up {} as {}",
+                    path.display(),
+                    number
+                );
                 created.push(PendingIssueCreated {
                     number,
                     url,
@@ -1807,6 +1888,10 @@ fn process_pending_issue_drafts(
                 });
             }
             Err(e) => {
+                eprintln!(
+                    "[TRACE] process_pending_issue_drafts: create failed {} => {e}",
+                    path.display()
+                );
                 if let Err(move_err) = move_file(&path, &failed_dir.join(&original_name)) {
                     eprintln!("Failed {original_name}: move_to_failed_failed: {move_err}");
                 }
@@ -1824,14 +1909,23 @@ fn process_pending_issue_drafts(
 fn move_file(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
     use std::io::ErrorKind;
 
+    eprintln!("[TRACE] move_file: {} -> {}", from.display(), to.display());
     if to.exists() {
+        eprintln!("[TRACE] move_file: dest exists before remove {}", to.display());
         fs_err::remove_file(to)?;
     }
     if let Err(e) = fs_err::rename(from, to) {
         if e.kind() == ErrorKind::NotFound {
+            eprintln!("[TRACE] move_file: source not found {}", from.display());
             return Ok(());
         }
+        eprintln!(
+            "[TRACE] move_file: rename failed {} -> {}: {e}",
+            from.display(),
+            to.display()
+        );
         return Err(e.into());
     }
+    eprintln!("[TRACE] move_file: rename ok {} -> {}", from.display(), to.display());
     Ok(())
 }
