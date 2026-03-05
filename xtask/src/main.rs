@@ -92,7 +92,10 @@ fn verify_without_args(dst: &Path) {
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !stdout.trim().is_empty() {
-        println!("Installed and runnable: {}", stdout.lines().next().unwrap_or(""));
+        println!(
+            "Installed and runnable: {}",
+            stdout.lines().next().unwrap_or("")
+        );
     } else {
         println!("Installed and runnable");
     }

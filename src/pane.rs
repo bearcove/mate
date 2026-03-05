@@ -120,13 +120,11 @@ fn parse_claude(lines: &[&str]) -> Option<PaneState> {
         .iter()
         .rev()
         .find_map(|line| parse_claude_spinner_activity(line));
-    let has_claude_ui_marker = lines
-        .iter()
-        .any(|line| {
-            line.contains("Claude Code")
-                || line.contains("claude --resume")
-                || (line.contains("current:") && line.contains("latest:"))
-        });
+    let has_claude_ui_marker = lines.iter().any(|line| {
+        line.contains("Claude Code")
+            || line.contains("claude --resume")
+            || (line.contains("current:") && line.contains("latest:"))
+    });
     let has_claude_completion_marker = lines.iter().any(|line| {
         line.contains("⏺ Done.")
             || (line.contains("Worked for") && (line.contains('✻') || line.contains('✽')))

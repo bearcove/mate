@@ -1142,10 +1142,7 @@ fn render_agent_blocks(rows: &[AgentListRow]) -> String {
     blocks.join("\n\n")
 }
 
-fn render_session_groups(
-    request_rows: &[RequestListRow],
-    agent_rows: &[AgentListRow],
-) -> String {
+fn render_session_groups(request_rows: &[RequestListRow], agent_rows: &[AgentListRow]) -> String {
     let mut sessions: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for row in request_rows {
         sessions.insert(row.session.clone());
@@ -1199,11 +1196,7 @@ fn format_agent_task_summary(request_id: &str, title: Option<&str>) -> String {
     }
 }
 
-fn classify_agent_role(
-    session: &str,
-    pane_id: &str,
-    requests: &[RequestListRow],
-) -> &'static str {
+fn classify_agent_role(session: &str, pane_id: &str, requests: &[RequestListRow]) -> &'static str {
     let mut is_source = false;
     let mut is_target = false;
     for request in requests.iter().filter(|request| request.session == session) {
@@ -1644,7 +1637,10 @@ fn format_missing_draft_message(
 ) -> String {
     let base = match stage {
         DraftMissingStage::BeforeRead => {
-            format!("Skipping draft {}: file disappeared before read.", path.display())
+            format!(
+                "Skipping draft {}: file disappeared before read.",
+                path.display()
+            )
         }
         DraftMissingStage::AfterCreate => {
             format!("Draft {} already removed after create.", path.display())
