@@ -1,5 +1,9 @@
 #![allow(dead_code)]
 
+use async_trait::async_trait;
+use eyre::Result;
+use std::sync::Arc;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentType {
     Claude,
@@ -20,6 +24,35 @@ pub struct PaneState {
     pub model: Option<String>,
     pub context_remaining: Option<String>,
     pub activity: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PaneId(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SessionName(pub String);
+
+#[async_trait]
+pub trait Pane: Send + Sync {
+    async fn slash_command(&self, command: &str) -> Result<()>;
+    async fn chat_message(&self, message: &str) -> Result<()>;
+    async fn snapshot(&self) -> Result<PaneState>;
+}
+
+pub struct PaneInfo {
+    pub id: PaneId,
+    pub session: SessionName,
+}
+
+pub struct DiscoveredPane {
+    pub info: PaneInfo,
+    pub pane: Arc<dyn Pane>,
+}
+
+#[async_trait]
+pub trait PaneDiscovery: Send + Sync {
+    async fn find_peer(&self, me: &PaneId) -> Result<Arc<dyn Pane>>;
+    async fn list_all(&self) -> Result<Vec<DiscoveredPane>>;
 }
 
 impl Default for PaneState {
