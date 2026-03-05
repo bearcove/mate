@@ -25,7 +25,6 @@ fn prepare_outgoing_text(text: &str, marker: &str) -> String {
     if is_slash_command(text) {
         return text.to_string();
     }
-
     format!("{text} {marker}")
 }
 
@@ -198,38 +197,33 @@ pub fn send_to_pane(pane_id: &str, text: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn short_paste_keeps_prefix_marker() {
+    fn prepare_outgoing_text_appends_marker_for_regular_text() {
         let marker = "🦊🪐🧿";
-        let tagged = prepare_outgoing_text("hello world", marker);
-        assert_eq!(tagged, format!("{marker} hello world"));
+        assert_eq!(
+            prepare_outgoing_text("hello world", marker),
+            "hello world 🦊🪐🧿"
+        );
     }
 
     #[test]
-    fn long_paste_appends_marker() {
+    fn prepare_outgoing_text_appends_marker_for_multiline_text() {
         let marker = "🦊🪐🧿";
-        let long_text = "x".repeat(LONG_PASTE_MARKER_THRESHOLD + 1);
-        let tagged = prepare_outgoing_text(&long_text, marker);
-        assert!(tagged.starts_with(&long_text));
-        assert!(tagged.ends_with(&format!(" {marker}")));
-    }
-
-    #[test]
-    fn slash_commands_skip_markers() {
-        let marker = "🦊🪐🧿";
-        assert!(is_slash_command("   /clear"));
-        assert_eq!(prepare_outgoing_text("   /clear", marker), "   /clear");
-        assert_eq!(prepare_outgoing_text("/status now", marker), "/status now");
-    }
-
-    #[test]
-    fn multiline_text_uses_trailing_marker() {
-        let marker = "🦊🪐🧿";
-        assert!(should_append_marker("line1\nline2"));
         assert_eq!(
             prepare_outgoing_text("line1\nline2", marker),
-            format!("line1\nline2 {marker}")
+            "line1\nline2 🦊🪐🧿"
         );
+    }
+
+    #[test]
+    fn prepare_outgoing_text_skips_markers_for_slash_commands() {
+        let marker = "🦊🪐🧿";
+        assert!(is_slash_command("   /clear"));
+        assert!(is_slash_command("/status now"));
+        assert_eq!(prepare_outgoing_text("   /clear", marker), "   /clear");
+        assert_eq!(prepare_outgoing_text("/status now", marker), "/status now");
     }
 }
 
