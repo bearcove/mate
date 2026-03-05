@@ -115,7 +115,7 @@ pub fn read_request_meta(dir: &Path) -> Option<RequestMeta> {
     })
 }
 
-#[allow(dead_code)] // used by bud retry (coming soon)
+#[allow(dead_code)] // used by mate retry (coming soon)
 pub fn read_request_content(dir: &Path) -> Option<String> {
     std::fs::read_to_string(dir.join("content")).ok()
 }

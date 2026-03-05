@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 fn config_path() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".config/bud/config.ini"))
+    Some(PathBuf::from(home).join(".config/mate/config.ini"))
 }
 
 pub fn discord_webhook_url() -> Option<String> {

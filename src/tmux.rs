@@ -230,12 +230,12 @@ pub fn find_other_pane(my_pane_id: &str) -> Result<Pane> {
 
     if details.is_empty() {
         return Err(eyre::eyre!(
-            "no claude or codex pane found in {other_panes} other panes:\n  (no panes to inspect)\nIs your buddy running?"
+            "no claude or codex pane found in {other_panes} other panes:\n  (no panes to inspect)\nIs your mate running?"
         ));
     }
 
     Err(eyre::eyre!(
-        "no claude or codex pane found in {other_panes} other panes:\n{}\nIs your buddy running?",
+        "no claude or codex pane found in {other_panes} other panes:\n{}\nIs your mate running?",
         details.join("\n")
     ))
 }

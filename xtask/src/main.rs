@@ -25,7 +25,7 @@ fn install() {
         .expect("xtask should live under workspace root");
 
     let status = Command::new("cargo")
-        .args(["build", "--release", "-p", "bud"])
+        .args(["build", "--release", "-p", "mate"])
         .current_dir(workspace_root)
         .status()
         .expect("Failed to run cargo build");
@@ -33,14 +33,14 @@ fn install() {
         std::process::exit(status.code().unwrap_or(1));
     }
 
-    let src = workspace_root.join("target/release/bud");
+    let src = workspace_root.join("target/release/mate");
     let home = std::env::var("HOME").expect("HOME not set");
     let bin_dir = Path::new(&home).join(".cargo/bin");
     std::fs::create_dir_all(&bin_dir).expect("Failed to create ~/.cargo/bin");
-    let dst = bin_dir.join("bud");
+    let dst = bin_dir.join("mate");
 
     std::fs::copy(&src, &dst).expect("Failed to copy binary");
-    println!("Copied bud to {}", dst.display());
+    println!("Copied mate to {}", dst.display());
 
     #[cfg(target_os = "macos")]
     {
@@ -84,7 +84,7 @@ fn try_verify_with_version(dst: &Path) -> bool {
 fn verify_without_args(dst: &Path) {
     let output = Command::new(dst)
         .output()
-        .expect("Failed to run installed bud binary");
+        .expect("Failed to run installed mate binary");
     if !output.status.success() {
         eprintln!("Error: installed binary failed to execute");
         eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));

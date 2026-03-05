@@ -55,7 +55,7 @@ fn request_key(session_name: &str, request_id: &str) -> String {
 }
 
 fn orphaned_dir() -> PathBuf {
-    PathBuf::from("/tmp/bud-orphaned")
+    PathBuf::from("/tmp/mate-orphaned")
 }
 
 impl crate::protocol::Coop for CoopServer {
@@ -148,17 +148,17 @@ impl crate::protocol::Coop for CoopServer {
 
         let message = format!(
             "{}\n\n\
-             Before you start, activate your skill: /bud\n\n\
+             Before you start, activate your skill: /mate\n\n\
              {task_content}\n\n\
              If you hit a decision point, want to share progress, or need clarification, send an update:\n\n\
-             cat <<'BUDEOF' | bud update {request_id}\n\
+             cat <<'MATEEOF' | mate update {request_id}\n\
              <your progress update here>\n\
-             BUDEOF\n\n\
+             MATEEOF\n\n\
              IMPORTANT: When you're done, you MUST send your response by executing \
              this shell command (use your Bash/shell tool — do NOT just print it as text):\n\n\
-             cat <<'BUDEOF' | bud respond {request_id}\n\
+             cat <<'MATEEOF' | mate respond {request_id}\n\
              <put your full response here>\n\
-             BUDEOF",
+             MATEEOF",
             crate::warmth::greeting(),
         );
 
@@ -195,7 +195,7 @@ pub async fn run_server(
     tracing_subscriber::fmt()
         .with_writer(log_file)
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env().add_directive("bud=info".parse()?),
+            tracing_subscriber::EnvFilter::from_default_env().add_directive("mate=info".parse()?),
         )
         .init();
 
@@ -208,7 +208,7 @@ pub async fn run_server(
 
     std::fs::write(&pid_path, std::process::id().to_string())?;
 
-    info!("bud server starting on {}", socket_path.display());
+    info!("mate server starting on {}", socket_path.display());
     info!("watching for responses in {}", response_root_dir.display());
 
     let listener = UnixListener::bind(&socket_path)?;
@@ -585,7 +585,7 @@ async fn run_staleness_checks(
                     session_name, request_id, meta.target_pane, unparsed
                 );
             } else if matches!(parsed_pane_state.state, pane::AgentState::Idle) {
-                info!("Buddy appears idle on task {request_id} without responding");
+                info!("Mate appears idle on task {request_id} without responding");
             }
 
             let state = pane_states.entry(key).or_insert_with(|| PaneState {
@@ -609,13 +609,13 @@ async fn run_staleness_checks(
                 && idle_since.elapsed() >= IDLE_NUDGE_AFTER
             {
                 let buddy_reminder = format!(
-                    "⚠️ You have an open task (ID: {request_id}) but appear to be idle.\nPlease respond when done:\n\ncat <<'EOF' | bud respond {request_id}\n<summary of what you did>\nEOF"
+                    "⚠️ You have an open task (ID: {request_id}) but appear to be idle.\nPlease respond when done:\n\ncat <<'EOF' | mate respond {request_id}\n<summary of what you did>\nEOF"
                 );
                 match tmux::send_to_pane(&meta.target_pane, &buddy_reminder) {
                     Ok(()) => {
                         state.idle_nudged = true;
                         let captain_notice = format!(
-                            "Buddy appears idle on task {request_id} without responding. Sent a reminder."
+                            "Mate appears idle on task {request_id} without responding. Sent a reminder."
                         );
                         if let Err(e) = tmux::send_to_pane(&meta.source_pane, &captain_notice) {
                             error!(
@@ -626,7 +626,7 @@ async fn run_staleness_checks(
                     }
                     Err(e) => {
                         error!(
-                            "failed to send idle nudge to buddy pane {} for request {}: {e}",
+                            "failed to send idle nudge to mate pane {} for request {}: {e}",
                             meta.target_pane, request_id
                         );
                     }
@@ -651,7 +651,7 @@ async fn run_staleness_checks(
                 .map(|title| format!(" ({title})"))
                 .unwrap_or_default();
             let message = format!(
-                "⏰ Hey captain — your buddy seems stuck on task {request_id}{title_suffix}. Their pane has been unchanged for 2 minutes.\n\nPane content:\n```\n{pane_content}\n```"
+                "⏰ Hey captain — your mate seems stuck on task {request_id}{title_suffix}. Their pane has been unchanged for 2 minutes.\n\nPane content:\n```\n{pane_content}\n```"
             );
             if let Err(e) = tmux::send_to_pane(&meta.source_pane, &message) {
                 error!(
@@ -769,7 +769,7 @@ async fn process_response_files(
                 Err(_) => "(could not read response file)".to_string(),
             };
             let intro = if let Some(title) = title.as_deref() {
-                format!("Fresh from your buddy — re: {title}")
+                format!("Fresh from your mate — re: {title}")
             } else {
                 crate::warmth::delivered().to_string()
             };
@@ -786,7 +786,7 @@ async fn process_response_files(
                 format!("\n\ngit status:\n```\n{git_status}\n```")
             };
             let message = format!(
-                "{intro}\n{body}\n\nRemember: you're the captain. If there's follow-up work, assign it to your buddy — don't do it yourself. Stay focused on the big picture!\n\nThis is also a good time to commit and push your buddy's work so far.{git_section}"
+                "{intro}\n{body}\n\nRemember: you're the captain. If there's follow-up work, assign it to your mate — don't do it yourself. Stay focused on the big picture!\n\nThis is also a good time to commit and push your mate's work so far.{git_section}"
             );
             let waiter_marker = session_path.join(format!("{request_id}.waiter"));
             if waiter_marker.exists() {

@@ -25,7 +25,7 @@ struct Args {
 #[derive(Facet, Debug)]
 #[repr(u8)]
 enum Command {
-    /// Start the bud server in the foreground
+    /// Start the mate server in the foreground
     Server,
     /// List pending/in-flight requests
     List,
@@ -41,13 +41,13 @@ enum Command {
         #[facet(args::positional)]
         request_id: String,
     },
-    /// Capture and show the buddy pane for a request
+    /// Capture and show the mate pane for a request
     Spy {
         /// The request ID to spy on
         #[facet(args::positional)]
         request_id: String,
     },
-    /// Steer a buddy on an in-flight request (reads from stdin)
+    /// Steer a mate on an in-flight request (reads from stdin)
     Steer {
         /// The request ID to steer
         #[facet(args::positional)]
@@ -90,54 +90,54 @@ enum Command {
     },
 }
 
-const MANUAL: &str = r#"bud - cooperative agents over tmux
+const MANUAL: &str = r#"mate - cooperative agents over tmux
 
 USAGE:
-    bud                              Show this manual
-    bud server                       Start the server (usually auto-started)
-    bud list                         List pending/in-flight requests
-    bud cancel <id>                  Cancel a pending request
-    bud show <id>                    Show full task content for a request
-    bud spy <id>                     Peek at buddy's pane
-    cat <<'EOF' | bud steer <id>     Steer buddy on a pending request
-    cat <<'EOF' | bud update <id>    Send progress update to captain
-    bud wait <id>                    Wait for a response (default 90s timeout)
-    bud wait <id> --timeout <secs>   Wait with custom timeout
-    bud issues                       Sync GitHub issues for current repo
-    cat <<'EOF' | bud assign                 Assign a task (clears worker context)
-    cat <<'EOF' | bud assign --keep          Assign, keeping worker's context
-    cat <<'EOF' | bud assign --title "..."   Assign with a title
-    cat <<'EOF' | bud assign --issue 42      Assign with GitHub issue context
-    cat <<'EOF' | bud respond <id>   Respond to a task (reads stdin)
+    mate                              Show this manual
+    mate server                       Start the server (usually auto-started)
+    mate list                         List pending/in-flight requests
+    mate cancel <id>                  Cancel a pending request
+    mate show <id>                    Show full task content for a request
+    mate spy <id>                     Peek at mate's pane
+    cat <<'EOF' | mate steer <id>     Steer mate on a pending request
+    cat <<'EOF' | mate update <id>    Send progress update to captain
+    mate wait <id>                    Wait for a response (default 90s timeout)
+    mate wait <id> --timeout <secs>   Wait with custom timeout
+    mate issues                       Sync GitHub issues for current repo
+    cat <<'EOF' | mate assign                 Assign a task (clears worker context)
+    cat <<'EOF' | mate assign --keep          Assign, keeping worker's context
+    cat <<'EOF' | mate assign --title "..."   Assign with a title
+    cat <<'EOF' | mate assign --issue 42      Assign with GitHub issue context
+    cat <<'EOF' | mate respond <id>   Respond to a task (reads stdin)
 
 EXAMPLES:
     # Assign a task:
-    cat <<'EOF' | bud assign
+    cat <<'EOF' | mate assign
     Review the error handling in src/server.rs
     EOF
 
     # Respond to a task:
-    cat <<'EOF' | bud respond abc12345
+    cat <<'EOF' | mate respond abc12345
     I reviewed it, here's what I found...
     EOF
 
 ENVIRONMENT:
     TMUX_PANE    Automatically set by tmux. Used to identify your pane.
-    BUD_SOCKET   Override the server socket path (default: /tmp/bud.sock)
+    MATE_SOCKET   Override the server socket path (default: /tmp/mate.sock)
 "#;
 
 fn socket_path() -> PathBuf {
-    std::env::var("BUD_SOCKET")
+    std::env::var("MATE_SOCKET")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp/bud.sock"))
+        .unwrap_or_else(|_| PathBuf::from("/tmp/mate.sock"))
 }
 
 fn pid_path() -> PathBuf {
-    PathBuf::from("/tmp/bud.pid")
+    PathBuf::from("/tmp/mate.pid")
 }
 
 fn response_root_dir() -> PathBuf {
-    PathBuf::from("/tmp/bud-responses")
+    PathBuf::from("/tmp/mate-responses")
 }
 
 fn response_dir(session_name: &str) -> PathBuf {
@@ -149,7 +149,7 @@ fn waiter_marker_path(session_name: &str, request_id: &str) -> PathBuf {
 }
 
 fn request_root_dir() -> PathBuf {
-    PathBuf::from("/tmp/bud-requests")
+    PathBuf::from("/tmp/mate-requests")
 }
 
 fn request_dir(session_name: &str) -> PathBuf {
@@ -157,15 +157,15 @@ fn request_dir(session_name: &str) -> PathBuf {
 }
 
 fn idle_tracking_root_dir() -> PathBuf {
-    PathBuf::from("/tmp/bud-idle")
+    PathBuf::from("/tmp/mate-idle")
 }
 
 fn orphaned_dir() -> PathBuf {
-    PathBuf::from("/tmp/bud-orphaned")
+    PathBuf::from("/tmp/mate-orphaned")
 }
 
 fn log_path() -> PathBuf {
-    PathBuf::from("/tmp/bud-server.log")
+    PathBuf::from("/tmp/mate-server.log")
 }
 
 fn tmux_session_name_for_pane(pane: &str) -> Result<String> {
@@ -281,7 +281,7 @@ async fn ensure_server_running() -> Result<()> {
         let _ = std::fs::remove_file(&socket);
     }
 
-    eprintln!("Starting bud server...");
+    eprintln!("Starting mate server...");
     let exe = std::env::current_exe()?;
     let log_file = std::fs::File::create(log_path())?;
     std::process::Command::new(exe)
@@ -298,7 +298,7 @@ async fn ensure_server_running() -> Result<()> {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     Err(eyre::eyre!(
-        "bud: server failed to start (check {})",
+        "mate: server failed to start (check {})",
         log_path().display()
     ))
 }
@@ -339,7 +339,7 @@ async fn client_assign(
             Ok(())
         }
         Err(first_error) => {
-            eprintln!("bud: assign failed: {first_error:?}");
+            eprintln!("mate: assign failed: {first_error:?}");
             ensure_server_running().await?;
             let request_id = assign_once(
                 &source_pane,
@@ -351,7 +351,7 @@ async fn client_assign(
             )
             .await
             .map_err(|e| {
-                eprintln!("bud: assign failed after retry: {e:?}");
+                eprintln!("mate: assign failed after retry: {e:?}");
                 eyre::eyre!("assign failed after retry: {e:?}")
             })?;
             eprintln!("{}", warmth::assigned());
@@ -365,23 +365,23 @@ async fn client_assign(
 fn print_request_followup_help(request_id: &str) {
     eprintln!();
     eprintln!("What's next:");
-    eprintln!("  Your buddy is working now. You have nothing to do on this task until they reply.");
+    eprintln!("  Your mate is working now. You have nothing to do on this task until they reply.");
     eprintln!("  Their response will arrive through user input automatically.");
     eprintln!("  Use this free time to plan your next move.");
     eprintln!();
     eprintln!(
-        "  bud spy {request_id}                         - peek at what your buddy's pane looks like right now"
+        "  mate spy {request_id}                         - peek at what your mate's pane looks like right now"
     );
     eprintln!(
-        "  bud list                                 - see all in-flight requests and their status"
+        "  mate list                                 - see all in-flight requests and their status"
     );
     eprintln!(
-        "  cat <<'EOF' | bud steer {request_id}         - send a mid-task clarification or course correction"
+        "  cat <<'EOF' | mate steer {request_id}         - send a mid-task clarification or course correction"
     );
     eprintln!(
-        "  cat <<'EOF' | bud update {request_id}        - (buddy uses this) send a progress update without completing"
+        "  cat <<'EOF' | mate update {request_id}        - (mate uses this) send a progress update without completing"
     );
-    eprintln!("  bud cancel {request_id}                      - cancel the task entirely");
+    eprintln!("  mate cancel {request_id}                      - cancel the task entirely");
 }
 
 async fn assign_once(
@@ -480,7 +480,7 @@ fn update_request(request_id: &str) -> Result<()> {
         format!("\n\ngit status:\n```\n{git_status}\n```")
     };
     let update = format!(
-        "📋 Progress update from your buddy on task {request_id}{title_suffix}:\n\n{message}\n\nWhether you're happy or unhappy with this update, reply to your buddy (not the user!) with:\n\ncat <<'BUDEOF' | bud steer {request_id}\n<your reply here>\nBUDEOF\n\nThis is also a good time to commit and push your buddy's work so far.{git_section}"
+        "📋 Progress update from your mate on task {request_id}{title_suffix}:\n\n{message}\n\nWhether you're happy or unhappy with this update, reply to your mate (not the user!) with:\n\ncat <<'MATEEOF' | mate steer {request_id}\n<your reply here>\nMATEEOF\n\nThis is also a good time to commit and push your mate's work so far.{git_section}"
     );
     let waiter_marker = waiter_marker_path(&session_name, request_id);
     if waiter_marker.exists() {
@@ -510,14 +510,14 @@ fn format_captain_update_for_buddy(request_id: &str, message: &str) -> String {
         "📌 Update from the captain on task {request_id}:\n\n\
          {message}\n\n\
          If you hit a decision point, want to share progress, or need clarification, send an update:\n\n\
-         cat <<'BUDEOF' | bud update {request_id}\n\
+         cat <<'MATEEOF' | mate update {request_id}\n\
          <your progress update here>\n\
-         BUDEOF\n\n\
+         MATEEOF\n\n\
          IMPORTANT: When you're done, you MUST send your response by executing \
          this shell command (use your Bash/shell tool — do NOT just print it as text):\n\n\
-         cat <<'BUDEOF' | bud respond {request_id}\n\
+         cat <<'MATEEOF' | mate respond {request_id}\n\
          <put your full response here>\n\
-         BUDEOF"
+         MATEEOF"
     )
 }
 
@@ -538,27 +538,27 @@ mod tests {
         let update = format_captain_update_for_buddy(request_id, "Please focus on parser tests.");
 
         assert!(update.contains("📌 Update from the captain on task deadbeef:"));
-        assert!(update.contains("cat <<'BUDEOF' | bud update deadbeef"));
-        assert!(update.contains("cat <<'BUDEOF' | bud respond deadbeef"));
+        assert!(update.contains("cat <<'MATEEOF' | mate update deadbeef"));
+        assert!(update.contains("cat <<'MATEEOF' | mate respond deadbeef"));
         assert!(update.contains("<your progress update here>"));
         assert!(update.contains("<put your full response here>"));
     }
 
     #[test]
     fn missing_draft_message_mentions_concurrency_only_with_evidence() {
-        let path = Path::new("/tmp/bud-issues/example/new/draft.md");
+        let path = Path::new("/tmp/mate-issues/example/new/draft.md");
 
         let neutral = format_missing_draft_message(path, DraftMissingStage::AfterCreate, false);
         assert!(neutral.contains("already removed after create"));
         assert!(!neutral.to_ascii_lowercase().contains("concurrent"));
 
         let concurrent = format_missing_draft_message(path, DraftMissingStage::AfterCreate, true);
-        assert!(concurrent.contains("Concurrent `bud issues` run detected."));
+        assert!(concurrent.contains("Concurrent `mate issues` run detected."));
     }
 
     #[test]
     fn cleanup_created_draft_handles_removed_and_missing_states() {
-        let root = std::env::temp_dir().join(format!("bud-test-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("mate-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("create temp directory");
         let existing = root.join("existing.md");
         std::fs::write(&existing, "draft").expect("write draft file");
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn idle_tracker_updates_and_resets_on_activity() {
-        let root = std::env::temp_dir().join(format!("bud-idle-test-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("mate-idle-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("create idle test directory");
 
         let mut tracker = IdleTracker::new(100, root.clone());
@@ -628,7 +628,7 @@ mod tests {
             session: "sess".to_string(),
             pane_id: "%2".to_string(),
             agent: "Codex".to_string(),
-            role: "Buddy".to_string(),
+            role: "Mate".to_string(),
             state: "Idle".to_string(),
             idle: "42".to_string(),
             context: "98% left".to_string(),
@@ -669,14 +669,14 @@ mod tests {
             session: "3".to_string(),
             pane_id: "%24".to_string(),
             agent: "Claude".to_string(),
-            role: "Buddy".to_string(),
+            role: "Mate".to_string(),
             state: "Working".to_string(),
             idle: "0".to_string(),
             context: "35% left".to_string(),
             activity: "17s - esc to interrupt".to_string(),
             tasks: vec!["805fbe4a (static-edit-verifier-167)".to_string()],
         }]);
-        assert!(blocks.contains("Agent: Claude @ 3/%24 | Role: Buddy"));
+        assert!(blocks.contains("Agent: Claude @ 3/%24 | Role: Mate"));
         assert!(blocks.contains("Task: 805fbe4a (static-edit-verifier-167)"));
         assert!(blocks.contains("Context: 35% left [####------]"));
         assert!(blocks.contains("Status: Working (17s - esc to interrupt)"));
@@ -763,7 +763,7 @@ mod tests {
                 session: "3".to_string(),
                 pane_id: "%24".to_string(),
                 agent: "Codex".to_string(),
-                role: "Buddy".to_string(),
+                role: "Mate".to_string(),
                 state: "Working".to_string(),
                 idle: "0".to_string(),
                 context: "35% left".to_string(),
@@ -859,7 +859,7 @@ mod tests {
                     response: "no".to_string(),
                 }]
             ),
-            "Buddy"
+            "Mate"
         );
     }
 
@@ -1209,7 +1209,7 @@ fn classify_agent_role(session: &str, pane_id: &str, requests: &[RequestListRow]
     }
     match (is_source, is_target) {
         (true, false) => "Captain",
-        (false, true) => "Buddy",
+        (false, true) => "Mate",
         (true, true) => "Mixed",
         (false, false) => "Unknown",
     }
@@ -1454,7 +1454,7 @@ fn sync_issues_to_pane() -> Result<()> {
         summary.push_str(&format!("\n  Browse deps:      ls {}/", deps_dir.display()));
     }
     summary.push_str(&format!(
-        "\n  Read the index:   cat {}\n  Read deps:        cat {}\n  Read labels:      cat {}\n  Read milestones:  cat {}\n  Read an issue:    cat {}/all/<filename>.md\n  Create an issue:  Write to {}/<name>.md then run: bud issues\n\nPick an issue to work on, then assign it to your buddy with: bud assign",
+        "\n  Read the index:   cat {}\n  Read deps:        cat {}\n  Read labels:      cat {}\n  Read milestones:  cat {}\n  Read an issue:    cat {}/all/<filename>.md\n  Create an issue:  Write to {}/<name>.md then run: mate issues\n\nPick an issue to work on, then assign it to your mate with: mate assign",
         result.index_path.display(),
         result.deps_markdown_path.display(),
         result.labels_markdown_path.display(),
@@ -1652,7 +1652,7 @@ fn format_missing_draft_message(
         }
     };
     if has_concurrency_evidence {
-        format!("{base} Concurrent `bud issues` run detected.")
+        format!("{base} Concurrent `mate issues` run detected.")
     } else {
         base
     }

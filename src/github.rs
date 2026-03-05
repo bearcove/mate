@@ -159,7 +159,7 @@ pub fn infer_repo() -> Result<String> {
 }
 
 pub fn issue_repo_dir(repo: &str) -> PathBuf {
-    PathBuf::from("/tmp/bud-issues").join(repo)
+    PathBuf::from("/tmp/mate-issues").join(repo)
 }
 
 pub fn parse_issue_file(content: &str) -> Result<ParsedIssueFile> {
@@ -389,7 +389,7 @@ pub fn read_issue_file(repo: &str, number: u64) -> Result<String> {
     }
 
     Err(eyre::eyre!(
-        "Issue #{number} not found. Run 'bud issues' first to sync."
+        "Issue #{number} not found. Run 'mate issues' first to sync."
     ))
 }
 
@@ -1164,7 +1164,7 @@ exit 0
         let _env_guard = env_lock().lock().expect("acquire env lock");
         let suffix = uuid::Uuid::new_v4();
         let repo = format!("test-owner/test-repo-close-{suffix}");
-        let root = PathBuf::from(std::env::temp_dir()).join(format!("bud-gh-test-{suffix}"));
+        let root = PathBuf::from(std::env::temp_dir()).join(format!("mate-gh-test-{suffix}"));
         std::fs::create_dir_all(&root).expect("create fake gh root");
         let _path_guard = with_fake_gh_env(&root);
         setup_repo_files(&repo, "closed", "open");
@@ -1189,7 +1189,7 @@ exit 0
         let _env_guard = env_lock().lock().expect("acquire env lock");
         let suffix = uuid::Uuid::new_v4();
         let repo = format!("test-owner/test-repo-reopen-{suffix}");
-        let root = PathBuf::from(std::env::temp_dir()).join(format!("bud-gh-test-{suffix}"));
+        let root = PathBuf::from(std::env::temp_dir()).join(format!("mate-gh-test-{suffix}"));
         std::fs::create_dir_all(&root).expect("create fake gh root");
         let _path_guard = with_fake_gh_env(&root);
         setup_repo_files(&repo, "open", "closed");
@@ -1256,7 +1256,7 @@ pub fn ensure_label_exists(repo: &str, label: &str) -> Result<()> {
             "--color",
             "BFD4F2",
             "--description",
-            "Created by bud issue-create",
+            "Created by mate issue-create",
         ])
         .output()?;
     if output.status.success() {
@@ -1677,7 +1677,7 @@ fn parse_repo_from_remote(remote: &str) -> Result<String> {
         rest
     } else {
         return Err(eyre::eyre!(
-            "bud issues only supports GitHub repositories. Remote origin points to: {remote}"
+            "mate issues only supports GitHub repositories. Remote origin points to: {remote}"
         ));
     };
 

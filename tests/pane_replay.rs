@@ -1,4 +1,4 @@
-use bud::pane::{AgentState, AgentType, PaneState, parse_pane_content};
+use mate::pane::{AgentState, AgentType, PaneState, parse_pane_content};
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
