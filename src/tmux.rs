@@ -63,6 +63,39 @@ impl pane::Pane for TmuxPane {
     }
 }
 
+pub struct TmuxPaneDiscovery;
+
+#[async_trait::async_trait]
+impl pane::PaneDiscovery for TmuxPaneDiscovery {
+    async fn find_peer(&self, me: &crate::pane::PaneId) -> Result<std::sync::Arc<dyn pane::Pane>> {
+        let pane = find_other_pane(&me.0).await?;
+        Ok(std::sync::Arc::new(TmuxPane::new(pane::PaneId(pane.id))))
+    }
+
+    async fn list_all(&self) -> Result<Vec<pane::DiscoveredPane>> {
+        use std::collections::HashSet;
+
+        let panes = list_all_panes().await?;
+        let mut discovered: Vec<pane::DiscoveredPane> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+
+        for pane in panes {
+            if !seen.insert(pane.id.clone()) {
+                continue;
+            }
+            discovered.push(pane::DiscoveredPane {
+                info: pane::PaneInfo {
+                    id: pane::PaneId(pane.id.clone()),
+                    session: pane::SessionName(pane.session_name.clone()),
+                },
+                pane: std::sync::Arc::new(TmuxPane::new(pane::PaneId(pane.id))),
+            });
+        }
+
+        Ok(discovered)
+    }
+}
+
 /// List tmux panes in the same session as the given pane.
 pub async fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
     // Find which session this pane belongs to
