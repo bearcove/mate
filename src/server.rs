@@ -402,6 +402,112 @@ impl crate::protocol::Coop for CoopServer {
         Ok(())
     }
 
+    async fn cancel(&self, req: crate::protocol::CancelRequest) -> Result<(), String> {
+        let crate::protocol::CancelRequest {
+            request_id,
+            session_name,
+        } = req;
+        let request_key = request_key(&session_name, &request_id);
+        let request_path = self.request_root_dir.join(&session_name).join(&request_id);
+
+        let removed_request = {
+            let mut reqs = self.requests.lock().await;
+            reqs.remove(&request_key)
+        };
+        let fallback_meta = if removed_request.is_none() {
+            crate::util::read_request_meta(&request_path)
+        } else {
+            None
+        };
+        if removed_request.is_none() && fallback_meta.is_none() {
+            return Err(format!("no request found for {request_key}"));
+        }
+
+        if let Err(e) = std::fs::remove_dir_all(&request_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(format!(
+                "failed to remove request directory {}: {e}",
+                request_path.display()
+            ));
+        }
+
+        {
+            let mut waiters = self.waiters.lock().await;
+            waiters.remove(&request_key);
+        }
+
+        let session_empty = {
+            let reqs = self.requests.lock().await;
+            !reqs.values().any(|req| req.session_name == session_name)
+        } && !session_has_request_dirs(&self.request_root_dir, &session_name);
+
+        if session_empty {
+            let (source_pane, title) = if let Some(request) = removed_request.as_ref() {
+                (Some(request.source_pane.clone()), request.title.clone())
+            } else if let Some(meta) = fallback_meta {
+                (Some(meta.source_pane), meta.title)
+            } else {
+                (None, None)
+            };
+
+            let mut states = self.idle_states.lock().await;
+            let state = states.entry(session_name.clone()).or_insert(IdleState {
+                empty_since: None,
+                notified: false,
+                last_title: None,
+                source_pane: None,
+                last_pane_content: None,
+                pane_unchanged_since: None,
+                parsed_pane_state: None,
+            });
+            state.empty_since = Some(Instant::now());
+            state.notified = false;
+            state.last_title = title;
+            state.source_pane = source_pane;
+            state.last_pane_content = None;
+            state.pane_unchanged_since = None;
+            state.parsed_pane_state = None;
+        }
+
+        info!("cancelled request {request_id} in session {session_name} via RPC");
+        Ok(())
+    }
+
+    async fn steer(&self, req: crate::protocol::SteerRequest) -> Result<(), String> {
+        let crate::protocol::SteerRequest {
+            request_id,
+            session_name,
+            content,
+        } = req;
+        let request_key = request_key(&session_name, &request_id);
+
+        let target_pane = {
+            let reqs = self.requests.lock().await;
+            if let Some(r) = reqs.get(&request_key) {
+                r.target_pane.clone()
+            } else {
+                return Err(format!("no request found for {request_key}"));
+            }
+        };
+
+        let steer_message = format!(
+            "📌 Update from the captain on task {request_id}:\n\n\
+             {content}\n\n\
+             If you hit a decision point, want to share progress, or need clarification, send an update:\n\n\
+             cat <<'MATEEOF' | mate update {request_id}\n\
+             <your progress update here>\n\
+             MATEEOF"
+        );
+
+        if let Err(e) = tmux::send_to_pane(&target_pane, &steer_message) {
+            return Err(format!("failed to deliver steer to pane {target_pane}: {e}"));
+        }
+
+        info!("delivered steer for request {request_id} in session {session_name} via RPC");
+        Ok(())
+    }
+
     async fn wait(
         &self,
         req: crate::protocol::WaitRequest,

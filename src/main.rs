@@ -228,10 +228,10 @@ async fn main() -> Result<()> {
             .await
         }
         Some(Command::List) => list_requests(),
-        Some(Command::Cancel { request_id }) => cancel_request(&request_id),
+        Some(Command::Cancel { request_id }) => cancel_request(&request_id).await,
         Some(Command::Show { request_id }) => show_request(&request_id),
         Some(Command::Spy { request_id }) => spy_request(&request_id),
-        Some(Command::Steer { request_id }) => steer_request(&request_id),
+        Some(Command::Steer { request_id }) => steer_request(&request_id).await,
         Some(Command::Accept { request_id }) => accept_request(&request_id).await,
         Some(Command::Update { request_id }) => update_request(&request_id).await,
         Some(Command::Issues) => sync_issues_to_pane(),
@@ -433,32 +433,41 @@ fn validate_request_id(request_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cancel_request(request_id: &str) -> Result<()> {
+async fn cancel_request(request_id: &str) -> Result<()> {
     validate_request_id(request_id)?;
     let session_name = tmux_session_name()?;
-    let path = request_dir(&session_name).join(request_id);
-    if !path.exists() {
-        eprintln!("No task with ID {request_id} found.");
-        return Ok(());
-    }
-    std::fs::remove_dir_all(&path)?;
+    ensure_server_running().await?;
+    with_coop_client(|client| async move {
+        client
+            .cancel(protocol::CancelRequest {
+                request_id: request_id.to_string(),
+                session_name,
+            })
+            .await
+            .map_err(|e| eyre::eyre!("{e:?}"))
+    })
+    .await?;
     eprintln!("Task {request_id} cancelled.");
     Ok(())
 }
 
-fn steer_request(request_id: &str) -> Result<()> {
+async fn steer_request(request_id: &str) -> Result<()> {
     validate_request_id(request_id)?;
-    let session_name = tmux_session_name()?;
-    let path = request_dir(&session_name).join(request_id);
-    let meta = util::read_request_meta(&path)
-        .ok_or_else(|| eyre::eyre!("No task with ID {request_id} found."))?;
     let message = read_stdin()?;
-    let steer = format_captain_update_for_buddy(request_id, &message);
-    tmux::send_to_pane(&meta.target_pane, &steer)?;
-    eprintln!(
-        "Sent steer update for task {request_id} to pane {}.",
-        meta.target_pane
-    );
+    let session_name = tmux_session_name()?;
+    ensure_server_running().await?;
+    with_coop_client(|client| async move {
+        client
+            .steer(protocol::SteerRequest {
+                request_id: request_id.to_string(),
+                session_name,
+                content: message,
+            })
+            .await
+            .map_err(|e| eyre::eyre!("{e:?}"))
+    })
+    .await?;
+    eprintln!("Sent steer update for task {request_id}.");
     print_request_followup_help(request_id);
     Ok(())
 }
@@ -520,6 +529,7 @@ async fn update_request(request_id: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn format_captain_update_for_buddy(request_id: &str, message: &str) -> String {
     format!(
         "📌 Update from the captain on task {request_id}:\n\n\
