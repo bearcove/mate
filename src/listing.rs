@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use eyre::Result;
 
+use crate::pane::{Pane, PaneDiscovery, PaneState};
 use crate::{pane, paths, tmux, util};
 
 pub(crate) struct IdleTracker {
@@ -342,15 +343,21 @@ pub(crate) async fn list_requests() -> Result<()> {
                     .and_then(|timestamp| now.duration_since(timestamp).ok())
                     .map(util::format_age)
                     .unwrap_or_else(|| "unknown".to_string());
-                let idle_seconds = if let Ok(capture) = tmux::capture_pane(&target_pane).await {
-                    let parsed = pane::parse_pane_content(&capture);
-                    if parsed.agent_type.is_some() {
-                        idle_tracker
-                            .update(&session_name, &target_pane, &parsed.state)
-                            .await
-                    } else {
-                        None
-                    }
+                let parsed = tmux::TmuxPane::new(pane::PaneId(target_pane.clone()))
+                    .snapshot()
+                    .await
+                    .ok();
+                let idle_seconds = if parsed
+                    .as_ref()
+                    .is_some_and(|state| state.agent_type.is_some())
+                {
+                    idle_tracker
+                        .update(
+                            &session_name,
+                            &target_pane,
+                            &parsed.unwrap_or_else(pane::PaneState::default).state,
+                        )
+                        .await
                 } else {
                     None
                 };
@@ -396,7 +403,8 @@ pub(crate) async fn list_requests() -> Result<()> {
         })
         .collect();
 
-    match tmux::list_all_panes().await {
+    let discovery = tmux::TmuxPaneDiscovery;
+    match discovery.list_all().await {
         Ok(panes) => {
             let mut tasks_by_agent: HashMap<(String, String), Vec<String>> = HashMap::new();
             for row in &rows {
@@ -407,8 +415,7 @@ pub(crate) async fn list_requests() -> Result<()> {
             }
             let mut agent_rows: Vec<AgentListRow> = Vec::new();
             for p in &panes {
-                let capture = tmux::capture_pane(&p.id).await.unwrap_or_default();
-                let parsed = pane::parse_pane_content(&capture);
+                let parsed: PaneState = p.pane.snapshot().await.unwrap_or_default();
                 let Some(agent_type) = parsed.agent_type else {
                     continue;
                 };
@@ -422,24 +429,25 @@ pub(crate) async fn list_requests() -> Result<()> {
                     pane::AgentState::Unknown => "Unknown",
                 };
                 let idle_seconds = idle_tracker
-                    .update(&p.session_name, &p.id, &parsed.state)
+                    .update(&p.info.session.0, &p.info.id.0, &parsed.state)
                     .await;
                 let context = parsed.context_remaining_percent;
                 let activity = parsed
                     .activity
-                    .map(|value| value.replace('\n', " "))
+                    .map(|value: String| value.replace('\n', " "))
                     .unwrap_or_else(|| "-".to_string());
                 agent_rows.push(AgentListRow {
-                    session: p.session_name.clone(),
-                    pane_id: p.id.clone(),
+                    session: p.info.session.0.clone(),
+                    pane_id: p.info.id.0.clone(),
                     agent: agent.to_string(),
-                    role: classify_agent_role(&p.session_name, &p.id, &request_rows).to_string(),
+                    role: classify_agent_role(&p.info.session.0, &p.info.id.0, &request_rows)
+                        .to_string(),
                     state: state.to_string(),
                     idle: format_idle_seconds(idle_seconds),
                     context,
                     activity,
                     tasks: tasks_by_agent
-                        .get(&(p.session_name.clone(), p.id.clone()))
+                        .get(&(p.info.session.0.clone(), p.info.id.0.clone()))
                         .cloned()
                         .unwrap_or_default(),
                 });
