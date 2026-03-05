@@ -67,6 +67,8 @@ enum Command {
     },
     /// Sync GitHub issues for the current repo and write them to disk
     Issues,
+    /// Compact the captain's context (reads summary from stdin)
+    Compact,
     /// Assign a task to another agent (reads from stdin)
     Assign {
         /// Keep the worker's existing context (default: clear it)
@@ -111,6 +113,7 @@ USAGE:
     mate wait <id>                    Wait for a response (default 90s timeout)
     mate wait <id> --timeout <secs>   Wait with custom timeout
     mate issues                       Sync GitHub issues for current repo
+    cat <<'EOF' | mate compact        Compact captain context with stdin summary
     cat <<'EOF' | mate assign                 Assign a task (clears worker context)
     cat <<'EOF' | mate assign --keep          Assign, keeping worker's context
     cat <<'EOF' | mate assign --title "..."   Assign with a title
@@ -235,6 +238,7 @@ async fn main() -> Result<()> {
         Some(Command::Accept { request_id }) => accept_request(&request_id).await,
         Some(Command::Update { request_id }) => update_request(&request_id).await,
         Some(Command::Issues) => sync_issues_to_pane(),
+        Some(Command::Compact) => compact_context(),
         Some(Command::Assign { keep, title, issue }) => {
             let pane = std::env::var("TMUX_PANE")
                 .map_err(|_| eyre::eyre!("TMUX_PANE not set — are you inside tmux?"))?;
@@ -258,6 +262,33 @@ async fn main() -> Result<()> {
             wait_for_response(&request_id, timeout_secs).await
         }
     }
+}
+
+fn compact_context() -> Result<()> {
+    let summary = read_stdin()?;
+    let pane = std::env::var("TMUX_PANE")
+        .map_err(|_| eyre::eyre!("TMUX_PANE not set — are you inside tmux?"))?;
+
+    let list_output = std::process::Command::new("mate").arg("list").output()?;
+    let task_list = if list_output.status.success() {
+        let stdout = String::from_utf8_lossy(&list_output.stdout).trim().to_string();
+        if stdout.is_empty() {
+            "none".to_string()
+        } else {
+            stdout
+        }
+    } else {
+        "none".to_string()
+    };
+
+    let prompt = format!(
+        "/captain\nYou've just been compacted. Here is your context summary from before compaction:\n\n{summary}\n\nIn-flight tasks at time of compaction:\n{task_list}"
+    );
+
+    tmux::send_to_pane(&pane, "/clear")?;
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    tmux::send_to_pane(&pane, &prompt)?;
+    Ok(())
 }
 
 async fn ensure_server_running() -> Result<()> {
