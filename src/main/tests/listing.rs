@@ -4,26 +4,34 @@ use crate::listing::{
     render_request_blocks, render_session_groups,
 };
 
-#[test]
-fn idle_tracker_updates_and_resets_on_activity() {
+#[tokio::test]
+async fn idle_tracker_updates_and_resets_on_activity() {
     let root = std::env::temp_dir().join(format!("mate-idle-test-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).expect("create idle test directory");
+    tokio::fs::create_dir_all(&root)
+        .await
+        .expect("create idle test directory");
 
     let mut tracker = IdleTracker::new(100, root.clone());
     assert_eq!(
-        tracker.update("sess", "%42", &crate::pane::AgentState::Idle),
+        tracker
+            .update("sess", "%42", &crate::pane::AgentState::Idle)
+            .await,
         Some(0)
     );
 
     let mut tracker = IdleTracker::new(108, root.clone());
     assert_eq!(
-        tracker.update("sess", "%42", &crate::pane::AgentState::Idle),
+        tracker
+            .update("sess", "%42", &crate::pane::AgentState::Idle)
+            .await,
         Some(8)
     );
 
     let mut tracker = IdleTracker::new(120, root.clone());
     assert_eq!(
-        tracker.update("sess", "%42", &crate::pane::AgentState::Working),
+        tracker
+            .update("sess", "%42", &crate::pane::AgentState::Working)
+            .await,
         None
     );
 
@@ -35,11 +43,15 @@ fn idle_tracker_updates_and_resets_on_activity() {
 
     let mut tracker = IdleTracker::new(130, root.clone());
     assert_eq!(
-        tracker.update("sess", "%42", &crate::pane::AgentState::Idle),
+        tracker
+            .update("sess", "%42", &crate::pane::AgentState::Idle)
+            .await,
         Some(0)
     );
 
-    std::fs::remove_dir_all(&root).expect("remove idle test directory");
+    tokio::fs::remove_dir_all(&root)
+        .await
+        .expect("remove idle test directory");
 }
 
 #[test]

@@ -20,7 +20,7 @@ impl IdleTracker {
         }
     }
 
-    pub(crate) fn update(
+    pub(crate) async fn update(
         &mut self,
         session: &str,
         pane: &str,
@@ -30,7 +30,7 @@ impl IdleTracker {
         let previous_idle_since = if let Some(entry) = self.cache.get(&key) {
             *entry
         } else {
-            let loaded = self.load_idle_since(session, pane);
+            let loaded = self.load_idle_since(session, pane).await;
             self.cache.insert(key.clone(), loaded);
             loaded
         };
@@ -39,7 +39,9 @@ impl IdleTracker {
             pane::AgentState::Working | pane::AgentState::Unknown => None,
         };
         if previous_idle_since != next_idle_since {
-            let _ = self.persist_idle_since(session, pane, next_idle_since);
+            let _ = self
+                .persist_idle_since(session, pane, next_idle_since)
+                .await;
             self.cache.insert(key, next_idle_since);
         }
         next_idle_since.map(|since| self.now_unix_secs.saturating_sub(since))
@@ -49,24 +51,30 @@ impl IdleTracker {
         self.root_dir.join(session).join(format!("{pane}.idle"))
     }
 
-    fn load_idle_since(&self, session: &str, pane: &str) -> Option<u64> {
+    async fn load_idle_since(&self, session: &str, pane: &str) -> Option<u64> {
         let path = self.file_path(session, pane);
-        std::fs::read_to_string(path)
+        tokio::fs::read_to_string(path)
+            .await
             .ok()
             .and_then(|value| value.trim().parse().ok())
     }
 
-    fn persist_idle_since(&self, session: &str, pane: &str, idle_since: Option<u64>) -> Result<()> {
+    async fn persist_idle_since(
+        &self,
+        session: &str,
+        pane: &str,
+        idle_since: Option<u64>,
+    ) -> Result<()> {
         let path = self.file_path(session, pane);
         match idle_since {
             Some(value) => {
                 if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
+                    tokio::fs::create_dir_all(parent).await?;
                 }
-                std::fs::write(path, value.to_string())?;
+                tokio::fs::write(path, value.to_string()).await?;
             }
             None => {
-                let _ = std::fs::remove_file(path);
+                let _ = tokio::fs::remove_file(path).await;
             }
         }
         Ok(())
@@ -334,20 +342,27 @@ pub(crate) async fn list_requests() -> Result<()> {
         .unwrap_or(0);
     let mut idle_tracker = IdleTracker::new(now_unix_secs, paths::idle_tracking_root_dir());
     let request_root = paths::request_root_dir();
-    if let Ok(session_entries) = std::fs::read_dir(&request_root) {
-        for session_entry in session_entries.flatten() {
-            if !session_entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+    if let Ok(mut session_entries) = tokio::fs::read_dir(&request_root).await {
+        while let Ok(Some(session_entry)) = session_entries.next_entry().await {
+            let Ok(session_type) = session_entry.file_type().await else {
+                continue;
+            };
+            if !session_type.is_dir() {
                 continue;
             }
+
             let session_name = session_entry.file_name().to_string_lossy().to_string();
             let session_request_dir = session_entry.path();
             let session_response_dir = paths::response_dir(&session_name);
-            let request_entries = match std::fs::read_dir(&session_request_dir) {
+            let mut request_entries = match tokio::fs::read_dir(&session_request_dir).await {
                 Ok(entries) => entries,
                 Err(_) => continue,
             };
-            for entry in request_entries.flatten() {
-                if !entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+            while let Ok(Some(entry)) = request_entries.next_entry().await {
+                let Ok(request_type) = entry.file_type().await else {
+                    continue;
+                };
+                if !request_type.is_dir() {
                     continue;
                 }
                 let id = entry.file_name().to_string_lossy().to_string();
@@ -355,30 +370,34 @@ pub(crate) async fn list_requests() -> Result<()> {
                     .await
                     .map(|meta| (meta.source_pane, meta.target_pane, meta.title))
                     .unwrap_or_else(|| ("(unreadable)".to_string(), "(unknown)".to_string(), None));
-                let age = entry
-                    .metadata()
+                let age = tokio::fs::metadata(entry.path())
+                    .await
                     .ok()
                     .and_then(|meta| meta.created().ok().or_else(|| meta.modified().ok()))
                     .and_then(|timestamp| now.duration_since(timestamp).ok())
                     .map(util::format_age)
                     .unwrap_or_else(|| "unknown".to_string());
-                let idle_seconds = tmux::capture_pane(&target_pane)
-                    .await
-                    .ok()
-                    .map(|capture| pane::parse_pane_content(&capture))
-                    .and_then(|parsed| {
-                        if parsed.agent_type.is_some() {
-                            Some(idle_tracker.update(&session_name, &target_pane, &parsed.state))
-                        } else {
-                            None
-                        }
-                    })
-                    .flatten();
-                let response_exists = if session_response_dir.join(format!("{id}.md")).exists() {
-                    "yes".to_string()
+                let idle_seconds = if let Ok(capture) = tmux::capture_pane(&target_pane).await {
+                    let parsed = pane::parse_pane_content(&capture);
+                    if parsed.agent_type.is_some() {
+                        idle_tracker
+                            .update(&session_name, &target_pane, &parsed.state)
+                            .await
+                    } else {
+                        None
+                    }
                 } else {
-                    "no".to_string()
+                    None
                 };
+                let response_exists =
+                    if tokio::fs::metadata(session_response_dir.join(format!("{id}.md")))
+                        .await
+                        .is_ok()
+                    {
+                        "yes".to_string()
+                    } else {
+                        "no".to_string()
+                    };
                 rows.push(Row {
                     session: session_name.clone(),
                     id,
@@ -437,7 +456,9 @@ pub(crate) async fn list_requests() -> Result<()> {
                     pane::AgentState::Idle => "Idle",
                     pane::AgentState::Unknown => "Unknown",
                 };
-                let idle_seconds = idle_tracker.update(&p.session_name, &p.id, &parsed.state);
+                let idle_seconds = idle_tracker
+                    .update(&p.session_name, &p.id, &parsed.state)
+                    .await;
                 let context = parsed.context_remaining.unwrap_or_else(|| "-".to_string());
                 let activity = parsed
                     .activity
