@@ -150,14 +150,9 @@ impl crate::protocol::Coop for CoopServer {
             "{}\n\n\
              Before you start, activate your skill: /mate\n\n\
              {task_content}\n\n\
-             If you hit a decision point, want to share progress, or need clarification, send an update:\n\n\
+             When you have progress to share, need clarification, or are done, send an update:\n\n\
              cat <<'MATEEOF' | mate update {request_id}\n\
-             <your progress update here>\n\
-             MATEEOF\n\n\
-             IMPORTANT: When you're done, you MUST send your response by executing \
-             this shell command (use your Bash/shell tool — do NOT just print it as text):\n\n\
-             cat <<'MATEEOF' | mate respond {request_id}\n\
-             <put your full response here>\n\
+             <your update here>\n\
              MATEEOF",
             crate::warmth::greeting(),
         );
@@ -609,7 +604,7 @@ async fn run_staleness_checks(
                 && idle_since.elapsed() >= IDLE_NUDGE_AFTER
             {
                 let buddy_reminder = format!(
-                    "⚠️ You have an open task (ID: {request_id}) but appear to be idle.\nPlease respond when done:\n\ncat <<'EOF' | mate respond {request_id}\n<summary of what you did>\nEOF"
+                    "⚠️ You have an open task (ID: {request_id}) but appear to be idle.\nPlease send an update:\n\ncat <<'EOF' | mate update {request_id}\n<summary of what you did>\nEOF"
                 );
                 match tmux::send_to_pane(&meta.target_pane, &buddy_reminder) {
                     Ok(()) => {

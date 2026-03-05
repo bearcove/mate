@@ -59,6 +59,12 @@ enum Command {
         #[facet(args::positional)]
         request_id: String,
     },
+    /// Accept a completed task (captain-only)
+    Accept {
+        /// The request ID to accept
+        #[facet(args::positional)]
+        request_id: String,
+    },
     /// Sync GitHub issues for the current repo and write them to disk
     Issues,
     /// Assign a task to another agent (reads from stdin)
@@ -73,7 +79,7 @@ enum Command {
         #[facet(args::named)]
         issue: Option<u64>,
     },
-    /// Respond to a task (reads from stdin)
+    /// Respond to a task (internal/backward-compatible)
     Respond {
         /// The request ID to respond to
         #[facet(args::positional)]
@@ -99,6 +105,7 @@ USAGE:
     mate cancel <id>                  Cancel a pending request
     mate show <id>                    Show full task content for a request
     mate spy <id>                     Peek at mate's pane
+    mate accept <id>                  Accept a completed task (captain-only)
     cat <<'EOF' | mate steer <id>     Steer mate on a pending request
     cat <<'EOF' | mate update <id>    Send progress update to captain
     mate wait <id>                    Wait for a response (default 90s timeout)
@@ -108,7 +115,7 @@ USAGE:
     cat <<'EOF' | mate assign --keep          Assign, keeping worker's context
     cat <<'EOF' | mate assign --title "..."   Assign with a title
     cat <<'EOF' | mate assign --issue 42      Assign with GitHub issue context
-    cat <<'EOF' | mate respond <id>   Respond to a task (reads stdin)
+    cat <<'EOF' | mate respond <id>   Internal/backward-compatible response command
 
 EXAMPLES:
     # Assign a task:
@@ -116,8 +123,8 @@ EXAMPLES:
     Review the error handling in src/server.rs
     EOF
 
-    # Respond to a task:
-    cat <<'EOF' | mate respond abc12345
+    # Send a progress update:
+    cat <<'EOF' | mate update abc12345
     I reviewed it, here's what I found...
     EOF
 
@@ -221,6 +228,7 @@ async fn main() -> Result<()> {
         Some(Command::Show { request_id }) => show_request(&request_id),
         Some(Command::Spy { request_id }) => spy_request(&request_id),
         Some(Command::Steer { request_id }) => steer_request(&request_id),
+        Some(Command::Accept { request_id }) => accept_request(&request_id),
         Some(Command::Update { request_id }) => update_request(&request_id),
         Some(Command::Issues) => sync_issues_to_pane(),
         Some(Command::Assign { keep, title, issue }) => {
@@ -381,6 +389,7 @@ fn print_request_followup_help(request_id: &str) {
     eprintln!(
         "  cat <<'EOF' | mate update {request_id}        - (mate uses this) send a progress update without completing"
     );
+    eprintln!("  mate accept {request_id}                      - accept the task and close it");
     eprintln!("  mate cancel {request_id}                      - cancel the task entirely");
 }
 
@@ -455,6 +464,23 @@ fn steer_request(request_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn accept_request(request_id: &str) -> Result<()> {
+    validate_request_id(request_id)?;
+    let session_name = tmux_session_name()?;
+    let request_path = request_dir(&session_name).join(request_id);
+    let _meta = util::read_request_meta(&request_path)
+        .ok_or_else(|| {
+            eyre::eyre!("No matching request found for {request_id} in session {session_name}.")
+        })?;
+
+    let response_path = response_dir(&session_name).join(format!("{request_id}.md"));
+    std::fs::create_dir_all(response_dir(&session_name))?;
+    std::fs::write(&response_path, "Accepted")?;
+    eprintln!("Task {request_id} accepted.");
+
+    Ok(())
+}
+
 fn update_request(request_id: &str) -> Result<()> {
     validate_request_id(request_id)?;
     let message = read_stdin()?;
@@ -480,7 +506,7 @@ fn update_request(request_id: &str) -> Result<()> {
         format!("\n\ngit status:\n```\n{git_status}\n```")
     };
     let update = format!(
-        "📋 Progress update from your mate on task {request_id}{title_suffix}:\n\n{message}\n\nWhether you're happy or unhappy with this update, reply to your mate (not the user!) with:\n\ncat <<'MATEEOF' | mate steer {request_id}\n<your reply here>\nMATEEOF\n\nThis is also a good time to commit and push your mate's work so far.{git_section}"
+        "📋 Progress update from your mate on task {request_id}{title_suffix}:\n\n{message}\n\nWhether you're happy or unhappy with this update, reply to your mate (not the user!) with:\n\ncat <<'MATEEOF' | mate steer {request_id}\n<your reply here>\nMATEEOF\n\nIf the work looks good, accept the task:\nmate accept {request_id}\n\nThis is also a good time to commit and push your mate's work so far.{git_section}"
     );
     let waiter_marker = waiter_marker_path(&session_name, request_id);
     if waiter_marker.exists() {
@@ -513,11 +539,8 @@ fn format_captain_update_for_buddy(request_id: &str, message: &str) -> String {
          cat <<'MATEEOF' | mate update {request_id}\n\
          <your progress update here>\n\
          MATEEOF\n\n\
-         IMPORTANT: When you're done, you MUST send your response by executing \
-         this shell command (use your Bash/shell tool — do NOT just print it as text):\n\n\
-         cat <<'MATEEOF' | mate respond {request_id}\n\
-         <put your full response here>\n\
-         MATEEOF"
+         If the work looks good, accept the task:\n\
+         mate accept {request_id}"
     )
 }
 
@@ -539,9 +562,10 @@ mod tests {
 
         assert!(update.contains("📌 Update from the captain on task deadbeef:"));
         assert!(update.contains("cat <<'MATEEOF' | mate update deadbeef"));
-        assert!(update.contains("cat <<'MATEEOF' | mate respond deadbeef"));
+        assert!(update.contains("mate accept deadbeef"));
         assert!(update.contains("<your progress update here>"));
-        assert!(update.contains("<put your full response here>"));
+        assert!(!update.contains("<your reply here>"));
+        assert!(!update.contains("mate respond deadbeef"));
     }
 
     #[test]
