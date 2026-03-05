@@ -198,15 +198,19 @@ fn read_stdin() -> Result<String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("MATE_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .with_writer(std::io::stderr)
-        .init();
-
     let args: Args = figue::from_std_args().unwrap();
+
+    // `mate server` initializes its own tracing subscriber (with a different default filter),
+    // so avoid calling `init()` twice which would panic.
+    if !matches!(args.command, Some(Command::Server)) {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_env("MATE_LOG")
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+            )
+            .with_writer(std::io::stderr)
+            .init();
+    }
 
     match args.command {
         None => {
