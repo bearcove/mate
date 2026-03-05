@@ -215,14 +215,8 @@ impl crate::protocol::Coop for CoopServer {
         } else {
             crate::warmth::delivered().to_string()
         };
-        let (git_section, show_commit_reminder) = crate::util::git_commit_reminder();
-        let commit_reminder = if show_commit_reminder {
-            "\n\nThis is also a good time to commit and push your mate's work so far."
-        } else {
-            ""
-        };
         let message = format!(
-            "{intro}\n{content}\n\nRemember: you're the captain. If there's follow-up work, assign it to your mate — don't do it yourself. Stay focused on the big picture!{commit_reminder}{git_section}"
+            "{intro}\n{content}\n\nRemember: you're the captain. If there's follow-up work, assign it to your mate — don't do it yourself. Stay focused on the big picture!"
         );
 
         // Deliver to waiter if present, otherwise via tmux directly.
