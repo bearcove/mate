@@ -1,3 +1,5 @@
+use crate::pane::Pane;
+use crate::{pane, tmux};
 use eyre::Result;
 
 pub(crate) async fn watch_ci() -> Result<()> {
@@ -20,7 +22,10 @@ pub(crate) async fn watch_ci_inner(pane: &str) -> Result<()> {
     match run_watch_ci_inner(pane).await {
         Ok(()) => Ok(()),
         Err(err) => {
-            let _ = crate::tmux::send_to_pane(pane, &format!("❌ CI watch failed: {err}")).await;
+            let pane = tmux::TmuxPane::new(pane::PaneId(pane.to_string()));
+            let _ = pane
+                .chat_message(&format!("❌ CI watch failed: {err}"))
+                .await;
             Ok(())
         }
     }
@@ -37,8 +42,9 @@ async fn run_watch_ci_inner(pane: &str) -> Result<()> {
         .status()
         .await?;
 
+    let pane = tmux::TmuxPane::new(pane::PaneId(pane.to_string()));
     if watch_status.success() {
-        crate::tmux::send_to_pane(pane, "✅ CI passed.").await?;
+        pane.chat_message("✅ CI passed.").await?;
         return Ok(());
     }
 
@@ -68,7 +74,7 @@ async fn run_watch_ci_inner(pane: &str) -> Result<()> {
     };
 
     let message = format!("❌ CI failed:\n```\n{summary}\n```");
-    crate::tmux::send_to_pane(pane, &message).await?;
+    pane.chat_message(&message).await?;
     Ok(())
 }
 

@@ -1,5 +1,6 @@
 use eyre::Result;
 
+use crate::pane::{self, Pane};
 use crate::{client, paths, tmux, util};
 
 pub(crate) async fn compact_context() -> Result<()> {
@@ -28,9 +29,10 @@ pub(crate) async fn compact_context() -> Result<()> {
         "/captain\nYou've just been compacted. Here is your context summary from before compaction:\n\n{summary}\n\nIn-flight tasks at time of compaction:\n{task_list}"
     );
 
-    tmux::send_to_pane(&pane, "/clear").await?;
+    let pane = tmux::TmuxPane::new(pane::PaneId(pane));
+    pane.slash_command("/clear").await?;
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    tmux::send_to_pane(&pane, &prompt).await?;
+    pane.chat_message(&prompt).await?;
     Ok(())
 }
 
