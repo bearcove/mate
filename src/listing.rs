@@ -312,7 +312,7 @@ pub(crate) fn classify_agent_role(
     }
 }
 
-pub(crate) fn list_requests() -> Result<()> {
+pub(crate) async fn list_requests() -> Result<()> {
     use std::time::SystemTime;
 
     struct Row {
@@ -352,6 +352,7 @@ pub(crate) fn list_requests() -> Result<()> {
                 }
                 let id = entry.file_name().to_string_lossy().to_string();
                 let (source_pane, target_pane, title) = util::read_request_meta(&entry.path())
+                    .await
                     .map(|meta| (meta.source_pane, meta.target_pane, meta.title))
                     .unwrap_or_else(|| ("(unreadable)".to_string(), "(unknown)".to_string(), None));
                 let age = entry
@@ -362,6 +363,7 @@ pub(crate) fn list_requests() -> Result<()> {
                     .map(util::format_age)
                     .unwrap_or_else(|| "unknown".to_string());
                 let idle_seconds = tmux::capture_pane(&target_pane)
+                    .await
                     .ok()
                     .map(|capture| pane::parse_pane_content(&capture))
                     .and_then(|parsed| {
@@ -410,7 +412,7 @@ pub(crate) fn list_requests() -> Result<()> {
         })
         .collect();
 
-    match tmux::list_all_panes() {
+    match tmux::list_all_panes().await {
         Ok(panes) => {
             let mut tasks_by_agent: HashMap<(String, String), Vec<String>> = HashMap::new();
             for row in &rows {
@@ -421,7 +423,7 @@ pub(crate) fn list_requests() -> Result<()> {
             }
             let mut agent_rows: Vec<AgentListRow> = Vec::new();
             for p in &panes {
-                let capture = tmux::capture_pane(&p.id).unwrap_or_default();
+                let capture = tmux::capture_pane(&p.id).await.unwrap_or_default();
                 let parsed = pane::parse_pane_content(&capture);
                 let Some(agent_type) = parsed.agent_type else {
                     continue;

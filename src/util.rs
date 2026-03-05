@@ -74,14 +74,14 @@ fn is_agent_footer_line(line: &str) -> bool {
     false
 }
 
-pub fn write_request(
+pub async fn write_request(
     dir: &Path,
     source_pane: &str,
     target_pane: &str,
     title: Option<&str>,
     content: &str,
 ) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
+    tokio::fs::create_dir_all(dir).await?;
 
     let meta = match title {
         Some(title) if !title.trim().is_empty() => {
@@ -90,13 +90,13 @@ pub fn write_request(
         _ => format!("{source_pane}\n{target_pane}"),
     };
 
-    std::fs::write(dir.join("meta"), meta)?;
-    std::fs::write(dir.join("content"), content)?;
+    tokio::fs::write(dir.join("meta"), meta).await?;
+    tokio::fs::write(dir.join("content"), content).await?;
     Ok(())
 }
 
-pub fn read_request_meta(dir: &Path) -> Option<RequestMeta> {
-    let content = std::fs::read_to_string(dir.join("meta")).ok()?;
+pub async fn read_request_meta(dir: &Path) -> Option<RequestMeta> {
+    let content = tokio::fs::read_to_string(dir.join("meta")).await.ok()?;
     let mut lines = content.lines();
     let source_pane = lines.next()?.trim().to_string();
     let target_pane = lines.next()?.trim().to_string();
@@ -116,8 +116,8 @@ pub fn read_request_meta(dir: &Path) -> Option<RequestMeta> {
 }
 
 #[allow(dead_code)] // used by mate retry (coming soon)
-pub fn read_request_content(dir: &Path) -> Option<String> {
-    std::fs::read_to_string(dir.join("content")).ok()
+pub async fn read_request_content(dir: &Path) -> Option<String> {
+    tokio::fs::read_to_string(dir.join("content")).await.ok()
 }
 
 /// Returns (git_section, show_commit_reminder).
@@ -126,10 +126,11 @@ pub fn read_request_content(dir: &Path) -> Option<String> {
 /// - git_section is a non-empty "\n\ngit status:\n```\n...\n```" block when dirty.
 /// - show_commit_reminder is true when the working tree is dirty OR there are
 ///   unpushed commits.
-pub fn git_commit_reminder() -> (String, bool) {
-    let porcelain = std::process::Command::new("git")
+pub async fn git_commit_reminder() -> (String, bool) {
+    let porcelain = tokio::process::Command::new("git")
         .args(["status", "--porcelain"])
-        .output();
+        .output()
+        .await;
 
     let porcelain_out = match porcelain {
         Ok(ref o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
@@ -149,9 +150,10 @@ pub fn git_commit_reminder() -> (String, bool) {
     }
 
     // Check for unpushed commits.
-    let unpushed = std::process::Command::new("git")
+    let unpushed = tokio::process::Command::new("git")
         .args(["rev-list", "--count", "@{u}..HEAD"])
-        .output();
+        .output()
+        .await;
 
     match unpushed {
         Ok(o) if o.status.success() => {

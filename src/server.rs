@@ -128,7 +128,7 @@ async fn restore_requests_from_disk(
             }
 
             let request_path = request_entry.path();
-            let meta = match crate::util::read_request_meta(&request_path) {
+            let meta = match crate::util::read_request_meta(&request_path).await {
                 Some(meta) => meta,
                 None => {
                     skipped_invalid += 1;
@@ -215,7 +215,7 @@ impl crate::protocol::Coop for CoopServer {
         let request_key = request_key(&session_name, &request_id);
         let title_for_file = title.clone();
 
-        let target = match tmux::find_other_pane(&source_pane) {
+        let target = match tmux::find_other_pane(&source_pane).await {
             Ok(p) => p,
             Err(e) => {
                 error!("failed to find worker pane: {e}");
@@ -267,7 +267,9 @@ impl crate::protocol::Coop for CoopServer {
             &target.id,
             title_for_file.as_deref(),
             &task_content,
-        ) {
+        )
+        .await
+        {
             self.requests.lock().await.remove(&request_key);
             let _ = fs::remove_dir_all(&request_path).await;
             return Err(format!(
@@ -278,7 +280,7 @@ impl crate::protocol::Coop for CoopServer {
         }
 
         if clear {
-            if let Err(e) = tmux::send_to_pane(&target.id, "/clear") {
+            if let Err(e) = tmux::send_to_pane(&target.id, "/clear").await {
                 error!("failed to send /clear to pane {}: {e}", target.id);
             }
             tokio::time::sleep(Duration::from_millis(2000)).await;
@@ -295,7 +297,7 @@ impl crate::protocol::Coop for CoopServer {
             crate::warmth::greeting(),
         );
 
-        if let Err(e) = tmux::send_to_pane(&target.id, &message) {
+        if let Err(e) = tmux::send_to_pane(&target.id, &message).await {
             error!("failed to send to pane {}: {e}", target.id);
             self.requests.lock().await.remove(&request_key);
             if let Err(remove_err) = fs::remove_dir_all(&request_path).await
@@ -324,16 +326,18 @@ impl crate::protocol::Coop for CoopServer {
         } = req;
         let request_key = request_key(&session_name, &request_id);
 
-        let (source_pane, title) = {
+        let in_memory = {
             let reqs = self.requests.lock().await;
-            if let Some(r) = reqs.get(&request_key) {
-                (r.source_pane.clone(), r.title.clone())
-            } else {
-                let path = self.request_root_dir.join(&session_name).join(&request_id);
-                match crate::util::read_request_meta(&path) {
-                    Some(meta) => (meta.source_pane, meta.title),
-                    None => return Err(format!("no request found for {request_key}")),
-                }
+            reqs.get(&request_key)
+                .map(|r| (r.source_pane.clone(), r.title.clone()))
+        };
+        let (source_pane, title) = if let Some(found) = in_memory {
+            found
+        } else {
+            let path = self.request_root_dir.join(&session_name).join(&request_id);
+            match crate::util::read_request_meta(&path).await {
+                Some(meta) => (meta.source_pane, meta.title),
+                None => return Err(format!("no request found for {request_key}")),
             }
         };
 
@@ -362,7 +366,7 @@ impl crate::protocol::Coop for CoopServer {
 
         if let Some(notify) = waiter_notify {
             notify.notify_one();
-        } else if let Err(e) = tmux::send_to_pane(&source_pane, &message) {
+        } else if let Err(e) = tmux::send_to_pane(&source_pane, &message).await {
             return Err(format!("failed to deliver response: {e}"));
         }
 
@@ -378,16 +382,18 @@ impl crate::protocol::Coop for CoopServer {
         } = req;
         let request_key = request_key(&session_name, &request_id);
 
-        let (source_pane, title) = {
+        let in_memory = {
             let reqs = self.requests.lock().await;
-            if let Some(r) = reqs.get(&request_key) {
-                (r.source_pane.clone(), r.title.clone())
-            } else {
-                let path = self.request_root_dir.join(&session_name).join(&request_id);
-                match crate::util::read_request_meta(&path) {
-                    Some(meta) => (meta.source_pane, meta.title),
-                    None => return Err(format!("no request found for {request_key}")),
-                }
+            reqs.get(&request_key)
+                .map(|r| (r.source_pane.clone(), r.title.clone()))
+        };
+        let (source_pane, title) = if let Some(found) = in_memory {
+            found
+        } else {
+            let path = self.request_root_dir.join(&session_name).join(&request_id);
+            match crate::util::read_request_meta(&path).await {
+                Some(meta) => (meta.source_pane, meta.title),
+                None => return Err(format!("no request found for {request_key}")),
             }
         };
 
@@ -395,7 +401,7 @@ impl crate::protocol::Coop for CoopServer {
             .as_deref()
             .map(|t| format!(" ({t})"))
             .unwrap_or_default();
-        let (git_section, show_commit_reminder) = crate::util::git_commit_reminder();
+        let (git_section, show_commit_reminder) = crate::util::git_commit_reminder().await;
         let commit_reminder = if show_commit_reminder {
             "\n\nThis is also a good time to commit and push your mate's work so far."
         } else {
@@ -420,7 +426,7 @@ impl crate::protocol::Coop for CoopServer {
 
         if let Some(notify) = waiter_notify {
             notify.notify_one();
-        } else if let Err(e) = tmux::send_to_pane(&source_pane, &message) {
+        } else if let Err(e) = tmux::send_to_pane(&source_pane, &message).await {
             return Err(format!("failed to deliver update: {e}"));
         }
 
@@ -440,7 +446,7 @@ impl crate::protocol::Coop for CoopServer {
             reqs.remove(&request_key)
         };
         let fallback_meta = if removed_request.is_none() {
-            crate::util::read_request_meta(&request_path)
+            crate::util::read_request_meta(&request_path).await
         } else {
             None
         };
@@ -513,7 +519,7 @@ impl crate::protocol::Coop for CoopServer {
             reqs.remove(&request_key)
         };
         let fallback_meta = if removed_request.is_none() {
-            crate::util::read_request_meta(&request_path)
+            crate::util::read_request_meta(&request_path).await
         } else {
             None
         };
@@ -599,7 +605,7 @@ impl crate::protocol::Coop for CoopServer {
              MATEEOF"
         );
 
-        if let Err(e) = tmux::send_to_pane(&target_pane, &steer_message) {
+        if let Err(e) = tmux::send_to_pane(&target_pane, &steer_message).await {
             return Err(format!(
                 "failed to deliver steer to pane {target_pane}: {e}"
             ));
@@ -669,13 +675,11 @@ pub async fn run_server(
     request_root_dir: PathBuf,
     log_path: PathBuf,
 ) -> Result<()> {
-    let log_path_for_blocking = log_path.clone();
-    let log_file = tokio::task::spawn_blocking({
-        let log_path_for_blocking = log_path_for_blocking.clone();
-        move || std::fs::File::create(log_path_for_blocking)
-    })
-    .await
-    .map_err(|e| eyre::eyre!("failed to create log file {}: {e}", log_path.display()))??;
+    let log_file = tokio::fs::File::create(&log_path)
+        .await
+        .map_err(|e| eyre::eyre!("failed to create log file {}: {e}", log_path.display()))?
+        .into_std()
+        .await;
 
     tracing_subscriber::fmt()
         .with_writer(log_file)
@@ -896,7 +900,7 @@ async fn maybe_notify_idle(
 
     let mut sessions_to_notify: Vec<PendingNotify> = Vec::new();
     for candidate in candidates {
-        let pane_capture = match tmux::capture_pane(&candidate.source_pane) {
+        let pane_capture = match tmux::capture_pane(&candidate.source_pane).await {
             Ok(content) => content,
             Err(e) => {
                 warn!(
@@ -1035,11 +1039,11 @@ async fn run_staleness_checks(
                 continue;
             }
 
-            let meta = match crate::util::read_request_meta(&request_path) {
+            let meta = match crate::util::read_request_meta(&request_path).await {
                 Some(meta) => meta,
                 None => continue,
             };
-            let pane_content = match tmux::capture_pane(&meta.target_pane) {
+            let pane_content = match tmux::capture_pane(&meta.target_pane).await {
                 Ok(content) => content,
                 Err(e) => {
                     error!(
@@ -1107,7 +1111,7 @@ async fn run_staleness_checks(
                 let buddy_reminder = format!(
                     "⚠️ You have an open task (ID: {request_id}) but appear to be idle.\nPlease send an update:\n\ncat <<'EOF' | mate update {request_id}\n<summary of what you did>\nEOF"
                 );
-                match tmux::send_to_pane(&meta.target_pane, &buddy_reminder) {
+                match tmux::send_to_pane(&meta.target_pane, &buddy_reminder).await {
                     Ok(()) => {
                         state.idle_nudged = true;
                     }
@@ -1128,7 +1132,7 @@ async fn run_staleness_checks(
                 state.notified = false;
             }
 
-            let captain_pane_content = match tmux::capture_pane(&meta.source_pane) {
+            let captain_pane_content = match tmux::capture_pane(&meta.source_pane).await {
                 Ok(content) => content,
                 Err(e) => {
                     error!(
@@ -1162,7 +1166,7 @@ async fn run_staleness_checks(
             let message = format!(
                 "⏰ Hey captain — your mate seems stuck on task {request_id}{title_suffix}. Both panes have been unchanged for 2 minutes.\n\nMate pane content:\n```\n{pane_content}\n```"
             );
-            if let Err(e) = tmux::send_to_pane(&meta.source_pane, &message) {
+            if let Err(e) = tmux::send_to_pane(&meta.source_pane, &message).await {
                 error!(
                     "failed to deliver staleness notification for request {} to pane {}: {e}",
                     request_id, meta.source_pane
@@ -1262,7 +1266,7 @@ async fn process_response_files(
             let (source_pane, target_pane, title) = if let Some(request) = in_memory_request {
                 (request.source_pane, request.target_pane, request.title)
             } else {
-                match crate::util::read_request_meta(&request_path) {
+                match crate::util::read_request_meta(&request_path).await {
                     Some(meta) => (meta.source_pane, meta.target_pane, meta.title),
                     None => {
                         if let Err(e) = fs::create_dir_all(orphaned_dir()).await {
@@ -1317,7 +1321,7 @@ async fn process_response_files(
             } else {
                 crate::warmth::delivered().to_string()
             };
-            let (git_section, show_commit_reminder) = crate::util::git_commit_reminder();
+            let (git_section, show_commit_reminder) = crate::util::git_commit_reminder().await;
             let commit_reminder = if show_commit_reminder {
                 "\n\nThis is also a good time to commit and push your mate's work so far."
             } else {
@@ -1339,7 +1343,7 @@ async fn process_response_files(
                     );
                     continue;
                 }
-            } else if let Err(e) = tmux::send_to_pane(&source_pane, &message) {
+            } else if let Err(e) = tmux::send_to_pane(&source_pane, &message).await {
                 error!(
                     "failed to deliver response to pane {} for request {}: {e}",
                     source_pane, request_id

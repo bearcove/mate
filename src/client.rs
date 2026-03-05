@@ -20,7 +20,7 @@ pub(crate) async fn ensure_server_running() -> Result<()> {
     }
 
     let pid_file = crate::paths::pid_path();
-    if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+    if let Ok(pid_str) = tokio::fs::read_to_string(&pid_file).await
         && let Ok(pid) = pid_str.trim().parse::<u32>()
         && pid_is_alive(pid)
     {
@@ -34,14 +34,17 @@ pub(crate) async fn ensure_server_running() -> Result<()> {
     }
 
     // Server not running — clean up stale socket if any
-    if socket.exists() {
-        let _ = std::fs::remove_file(&socket);
+    if tokio::fs::metadata(&socket).await.is_ok() {
+        let _ = tokio::fs::remove_file(&socket).await;
     }
 
     eprintln!("Starting mate server...");
     let exe = std::env::current_exe()?;
-    let log_file = std::fs::File::create(crate::paths::log_path())?;
-    std::process::Command::new(exe)
+    let log_file = tokio::fs::File::create(crate::paths::log_path())
+        .await?
+        .into_std()
+        .await;
+    tokio::process::Command::new(exe)
         .arg("server")
         .stdin(std::process::Stdio::null())
         .stdout(log_file.try_clone()?)
@@ -194,7 +197,7 @@ pub(crate) fn validate_request_id(request_id: &str) -> Result<()> {
 
 pub(crate) async fn cancel_request(request_id: &str) -> Result<()> {
     validate_request_id(request_id)?;
-    let session_name = crate::paths::tmux_session_name()?;
+    let session_name = crate::paths::tmux_session_name().await?;
     ensure_server_running().await?;
     with_coop_client(|client| async move {
         client
@@ -212,8 +215,8 @@ pub(crate) async fn cancel_request(request_id: &str) -> Result<()> {
 
 pub(crate) async fn steer_request(request_id: &str) -> Result<()> {
     validate_request_id(request_id)?;
-    let message = crate::paths::read_stdin()?;
-    let session_name = crate::paths::tmux_session_name()?;
+    let message = crate::paths::read_stdin().await?;
+    let session_name = crate::paths::tmux_session_name().await?;
     ensure_server_running().await?;
     with_coop_client(|client| async move {
         client
@@ -233,7 +236,7 @@ pub(crate) async fn steer_request(request_id: &str) -> Result<()> {
 
 pub(crate) async fn accept_request(request_id: &str) -> Result<()> {
     validate_request_id(request_id)?;
-    let session_name = crate::paths::tmux_session_name()?;
+    let session_name = crate::paths::tmux_session_name().await?;
     ensure_server_running().await?;
 
     with_coop_client(|client| async move {
@@ -270,8 +273,8 @@ pub(crate) async fn rpc_respond(request_id: &str, session_name: &str, content: &
 
 pub(crate) async fn update_request(request_id: &str) -> Result<()> {
     validate_request_id(request_id)?;
-    let content = crate::paths::read_stdin()?;
-    let session_name = crate::paths::tmux_session_name()?;
+    let content = crate::paths::read_stdin().await?;
+    let session_name = crate::paths::tmux_session_name().await?;
     ensure_server_running().await?;
     with_coop_client(|client| async move {
         client
@@ -290,7 +293,7 @@ pub(crate) async fn update_request(request_id: &str) -> Result<()> {
 
 pub(crate) async fn wait_for_response(request_id: &str, timeout_secs: u64) -> Result<()> {
     validate_request_id(request_id)?;
-    let session_name = crate::paths::tmux_session_name()?;
+    let session_name = crate::paths::tmux_session_name().await?;
     let request_path = crate::paths::request_dir(&session_name).join(request_id);
     if !request_path.join("meta").is_file() {
         return Err(eyre::eyre!(
@@ -299,6 +302,7 @@ pub(crate) async fn wait_for_response(request_id: &str, timeout_secs: u64) -> Re
     }
 
     let buddy_pane = crate::util::read_request_meta(&request_path)
+        .await
         .map(|meta| meta.target_pane)
         .unwrap_or_default();
 
@@ -345,8 +349,9 @@ pub(crate) async fn wait_for_response(request_id: &str, timeout_secs: u64) -> Re
                         let status_suffix = if buddy_pane.is_empty() {
                             String::new()
                         } else {
-                            let capture =
-                                crate::tmux::capture_pane(&buddy_pane).unwrap_or_default();
+                            let capture = crate::tmux::capture_pane(&buddy_pane)
+                                .await
+                                .unwrap_or_default();
                             let parsed = crate::pane::parse_pane_content(&capture);
                             if let Some(agent_type) = parsed.agent_type {
                                 let agent = match agent_type {

@@ -1,6 +1,6 @@
 use eyre::Result;
-use std::io::Read as _;
 use std::path::PathBuf;
+use tokio::io::AsyncReadExt as _;
 
 pub(crate) fn socket_path() -> PathBuf {
     std::env::var("MATE_SOCKET")
@@ -36,10 +36,11 @@ pub(crate) fn log_path() -> PathBuf {
     PathBuf::from("/tmp/mate-server.log")
 }
 
-pub(crate) fn tmux_session_name_for_pane(pane: &str) -> Result<String> {
-    let output = std::process::Command::new("tmux")
+pub(crate) async fn tmux_session_name_for_pane(pane: &str) -> Result<String> {
+    let output = tokio::process::Command::new("tmux")
         .args(["display-message", "-t", pane, "-p", "#{session_name}"])
-        .output()?;
+        .output()
+        .await?;
     if !output.status.success() {
         return Err(eyre::eyre!("tmux display-message failed for pane {pane}"));
     }
@@ -50,15 +51,16 @@ pub(crate) fn tmux_session_name_for_pane(pane: &str) -> Result<String> {
     Ok(session_name)
 }
 
-pub(crate) fn tmux_session_name() -> Result<String> {
+pub(crate) async fn tmux_session_name() -> Result<String> {
     let pane = std::env::var("TMUX_PANE")
         .map_err(|_| eyre::eyre!("TMUX_PANE not set — are you inside tmux?"))?;
-    tmux_session_name_for_pane(&pane)
+    tmux_session_name_for_pane(&pane).await
 }
 
-pub(crate) fn read_stdin() -> Result<String> {
+pub(crate) async fn read_stdin() -> Result<String> {
     let mut buf = String::new();
-    std::io::stdin().read_to_string(&mut buf)?;
+    let mut stdin = tokio::io::stdin();
+    stdin.read_to_string(&mut buf).await?;
     if buf.trim().is_empty() {
         return Err(eyre::eyre!("no input on stdin"));
     }

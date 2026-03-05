@@ -183,26 +183,26 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Some(Command::List) => listing::list_requests(),
+        Some(Command::List) => listing::list_requests().await,
         Some(Command::Cancel { request_id }) => client::cancel_request(&request_id).await,
-        Some(Command::Show { request_id }) => requests::show_request(&request_id),
-        Some(Command::Spy { request_id }) => requests::spy_request(&request_id),
+        Some(Command::Show { request_id }) => requests::show_request(&request_id).await,
+        Some(Command::Spy { request_id }) => requests::spy_request(&request_id).await,
         Some(Command::Steer { request_id }) => client::steer_request(&request_id).await,
         Some(Command::Accept { request_id }) => client::accept_request(&request_id).await,
         Some(Command::Update { request_id }) => client::update_request(&request_id).await,
         Some(Command::Issues) => issues::sync_issues(),
-        Some(Command::Compact) => requests::compact_context(),
+        Some(Command::Compact) => requests::compact_context().await,
         Some(Command::Assign { keep, title, issue }) => {
             let pane = std::env::var("TMUX_PANE")
                 .map_err(|_| eyre::eyre!("TMUX_PANE not set — are you inside tmux?"))?;
-            let session_name = tmux_session_name_for_pane(&pane)?;
-            let content = read_stdin()?;
+            let session_name = tmux_session_name_for_pane(&pane).await?;
+            let content = read_stdin().await?;
             client::client_assign(pane, session_name, content, !keep, title, issue).await
         }
         Some(Command::Respond { request_id }) => {
             client::validate_request_id(&request_id)?;
-            let content = read_stdin()?;
-            let session_name = tmux_session_name()?;
+            let content = read_stdin().await?;
+            let session_name = tmux_session_name().await?;
             client::rpc_respond(&request_id, &session_name, &content).await
         }
         Some(Command::Wait {
@@ -212,8 +212,8 @@ async fn main() -> Result<()> {
             let timeout_secs = timeout.unwrap_or(90);
             client::wait_for_response(&request_id, timeout_secs).await
         }
-        Some(Command::Watch) => watch::watch_ci(),
-        Some(Command::_WatchInner { pane }) => watch::watch_ci_inner(&pane),
+        Some(Command::Watch) => watch::watch_ci().await,
+        Some(Command::_WatchInner { pane }) => watch::watch_ci_inner(&pane).await,
     }
 }
 

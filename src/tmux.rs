@@ -1,6 +1,5 @@
 use eyre::Result;
 use rand::prelude::IndexedRandom;
-use std::process::Command;
 
 const EMOJI_POOL: &[&str] = &[
     "🌵", "🍄", "🦊", "🐙", "🎯", "🔮", "🧊", "🪐", "🦑", "🎪", "🌋", "🦎", "🪸", "🧿", "🫧", "🪬",
@@ -35,11 +34,12 @@ pub struct Pane {
 }
 
 /// List tmux panes in the same session as the given pane.
-pub fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
+pub async fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
     // Find which session this pane belongs to
-    let session_output = Command::new("tmux")
+    let session_output = tokio::process::Command::new("tmux")
         .args(["display-message", "-t", pane_id, "-p", "#{session_id}"])
-        .output()?;
+        .output()
+        .await?;
     if !session_output.status.success() {
         return Err(eyre::eyre!(
             "tmux display-message failed for pane {pane_id}"
@@ -47,7 +47,7 @@ pub fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
     }
     let session_id = String::from_utf8(session_output.stdout)?.trim().to_string();
 
-    let output = Command::new("tmux")
+    let output = tokio::process::Command::new("tmux")
         .args([
             "list-panes",
             "-t",
@@ -56,7 +56,8 @@ pub fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
             "-F",
             "#{pane_id}\t#{pane_pid}\t#{session_name}",
         ])
-        .output()?;
+        .output()
+        .await?;
 
     if !output.status.success() {
         return Err(eyre::eyre!("tmux list-panes failed"));
@@ -82,15 +83,16 @@ pub fn list_panes(pane_id: &str) -> Result<Vec<Pane>> {
 }
 
 /// List all tmux panes across all sessions.
-pub fn list_all_panes() -> Result<Vec<Pane>> {
-    let output = Command::new("tmux")
+pub async fn list_all_panes() -> Result<Vec<Pane>> {
+    let output = tokio::process::Command::new("tmux")
         .args([
             "list-panes",
             "-a",
             "-F",
             "#{pane_id}\t#{pane_pid}\t#{session_name}",
         ])
-        .output()?;
+        .output()
+        .await?;
     if !output.status.success() {
         return Err(eyre::eyre!("tmux list-panes -a failed"));
     }
@@ -114,25 +116,26 @@ pub fn list_all_panes() -> Result<Vec<Pane>> {
 }
 
 /// Capture the visible content of a tmux pane.
-pub fn capture_pane(pane_id: &str) -> Result<String> {
-    let output = Command::new("tmux")
+pub async fn capture_pane(pane_id: &str) -> Result<String> {
+    let output = tokio::process::Command::new("tmux")
         .args(["capture-pane", "-t", pane_id, "-p"])
-        .output()?;
+        .output()
+        .await?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 /// Wait until the pane shows either our emoji marker (small pastes) or a paste
 /// indicator from Claude Code / Codex (large pastes).
-fn wait_for_paste(pane_id: &str, marker: &str) -> Result<()> {
+async fn wait_for_paste(pane_id: &str, marker: &str) -> Result<()> {
     for _ in 0..100 {
-        let content = capture_pane(pane_id)?;
+        let content = capture_pane(pane_id).await?;
         if content.contains(marker)
             || content.contains("[Pasted text ")
             || content.contains("[Pasted Content ")
         {
             return Ok(());
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     // Timed out — send C-m anyway, best effort
     Ok(())
@@ -140,7 +143,7 @@ fn wait_for_paste(pane_id: &str, marker: &str) -> Result<()> {
 
 /// Send text to a tmux pane. Uses a unique emoji marker for paste detection,
 /// waits for paste confirmation, then submits with C-m.
-pub fn send_to_pane(pane_id: &str, text: &str) -> Result<()> {
+pub async fn send_to_pane(pane_id: &str, text: &str) -> Result<()> {
     let threemoji = gen_threemoji();
     let tagged = prepare_outgoing_text(text, &threemoji);
     // marker to wait for before submitting
@@ -151,25 +154,28 @@ pub fn send_to_pane(pane_id: &str, text: &str) -> Result<()> {
     };
 
     // Silently exit copy mode if active (no-op if not in copy mode)
-    let _ = Command::new("tmux")
+    let _ = tokio::process::Command::new("tmux")
         .args(["copy-mode", "-q", "-t", pane_id])
         .stderr(std::process::Stdio::null())
-        .status();
+        .status()
+        .await;
 
     // Clear any existing input (C-u kills the line without interrupting the process)
-    let status = Command::new("tmux")
+    let status = tokio::process::Command::new("tmux")
         .args(["send-keys", "-t", pane_id, "C-u"])
-        .status()?;
+        .status()
+        .await?;
     if !status.success() {
         return Err(eyre::eyre!(
             "tmux send-keys (C-u) failed for pane {pane_id}"
         ));
     }
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let status = Command::new("tmux")
+    let status = tokio::process::Command::new("tmux")
         .args(["send-keys", "-t", pane_id, "-l", &tagged])
-        .status()?;
+        .status()
+        .await?;
     if !status.success() {
         return Err(eyre::eyre!(
             "tmux send-keys (text) failed for pane {pane_id}"
@@ -177,15 +183,16 @@ pub fn send_to_pane(pane_id: &str, text: &str) -> Result<()> {
     }
 
     // Wait for our emoji marker or a paste indicator to appear
-    wait_for_paste(pane_id, marker)?;
+    wait_for_paste(pane_id, marker).await?;
 
     // Let the terminal settle after paste lands
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Submit with C-m (carriage return)
-    let status = Command::new("tmux")
+    let status = tokio::process::Command::new("tmux")
         .args(["send-keys", "-t", pane_id, "C-m"])
-        .status()?;
+        .status()
+        .await?;
     if !status.success() {
         return Err(eyre::eyre!(
             "tmux send-keys (C-m) failed for pane {pane_id}"
@@ -217,10 +224,10 @@ fn is_agent_pane(child_names: &[String]) -> bool {
 }
 
 /// Find a pane in the same session that is running an agent.
-pub fn find_other_pane(my_pane_id: &str) -> Result<Pane> {
+pub async fn find_other_pane(my_pane_id: &str) -> Result<Pane> {
     use sysinfo::{ProcessesToUpdate, System};
 
-    let panes = list_panes(my_pane_id)?;
+    let panes = list_panes(my_pane_id).await?;
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
 
