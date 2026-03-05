@@ -1,4 +1,4 @@
-use crate::pane;
+use crate::pane::{self, Pane};
 use crate::protocol::{CoopClient, CoopDispatcher};
 use crate::tmux;
 use eyre::Result;
@@ -215,8 +215,12 @@ impl crate::protocol::Coop for CoopServer {
         let request_key = request_key(&session_name, &request_id);
         let title_for_file = title.clone();
 
-        let target = match tmux::find_other_pane(&source_pane).await {
-            Ok(p) => p,
+        let discovery = tmux::TmuxPaneDiscovery;
+        let (target_pane_id, target_pane) = match discovery
+            .find_peer_with_id(&pane::PaneId(source_pane.clone()))
+            .await
+        {
+            Ok((id, pane)) => (id, pane),
             Err(e) => {
                 error!("failed to find worker pane: {e}");
                 return Err(e.to_string());
@@ -234,7 +238,7 @@ impl crate::protocol::Coop for CoopServer {
             Request {
                 session_name: session_name.clone(),
                 source_pane: source_pane.clone(),
-                target_pane: target.id.clone(),
+                target_pane: target_pane_id.0.clone(),
                 title,
             },
         );
@@ -264,7 +268,7 @@ impl crate::protocol::Coop for CoopServer {
         if let Err(e) = crate::util::write_request(
             &request_path,
             &source_pane,
-            &target.id,
+            &target_pane_id.0,
             title_for_file.as_deref(),
             &task_content,
         )
@@ -280,8 +284,8 @@ impl crate::protocol::Coop for CoopServer {
         }
 
         if clear {
-            if let Err(e) = tmux::send_to_pane(&target.id, "/clear").await {
-                error!("failed to send /clear to pane {}: {e}", target.id);
+            if let Err(e) = target_pane.slash_command("/clear").await {
+                error!("failed to send /clear to pane {}: {e}", target_pane_id.0);
             }
             tokio::time::sleep(Duration::from_millis(2000)).await;
         }
@@ -297,8 +301,8 @@ impl crate::protocol::Coop for CoopServer {
             crate::warmth::greeting(),
         );
 
-        if let Err(e) = tmux::send_to_pane(&target.id, &message).await {
-            error!("failed to send to pane {}: {e}", target.id);
+        if let Err(e) = target_pane.chat_message(&message).await {
+            error!("failed to send to pane {}: {e}", target_pane_id.0);
             self.requests.lock().await.remove(&request_key);
             if let Err(remove_err) = fs::remove_dir_all(&request_path).await
                 && remove_err.kind() != std::io::ErrorKind::NotFound
@@ -308,12 +312,12 @@ impl crate::protocol::Coop for CoopServer {
                     request_path.display()
                 );
             }
-            return Err(format!("failed to send to pane {}: {e}", target.id));
+            return Err(format!("failed to send to pane {}: {e}", target_pane_id.0));
         }
 
         info!(
             "assigned request {request_id} -> pane {} (session {session_name})",
-            target.id
+            target_pane_id.0
         );
         Ok(request_id)
     }
@@ -366,7 +370,10 @@ impl crate::protocol::Coop for CoopServer {
 
         if let Some(notify) = waiter_notify {
             notify.notify_one();
-        } else if let Err(e) = tmux::send_to_pane(&source_pane, &message).await {
+        } else if let Err(e) = tmux::TmuxPane::new(pane::PaneId(source_pane.clone()))
+            .chat_message(&message)
+            .await
+        {
             return Err(format!("failed to deliver response: {e}"));
         }
 
@@ -426,7 +433,10 @@ impl crate::protocol::Coop for CoopServer {
 
         if let Some(notify) = waiter_notify {
             notify.notify_one();
-        } else if let Err(e) = tmux::send_to_pane(&source_pane, &message).await {
+        } else if let Err(e) = tmux::TmuxPane::new(pane::PaneId(source_pane.clone()))
+            .chat_message(&message)
+            .await
+        {
             return Err(format!("failed to deliver update: {e}"));
         }
 
@@ -605,9 +615,11 @@ impl crate::protocol::Coop for CoopServer {
              MATEEOF"
         );
 
-        if let Err(e) = tmux::send_to_pane(&target_pane, &steer_message).await {
+        let target_pane_id = target_pane.clone();
+        let target = tmux::TmuxPane::new(pane::PaneId(target_pane_id.clone()));
+        if let Err(e) = target.chat_message(&steer_message).await {
             return Err(format!(
-                "failed to deliver steer to pane {target_pane}: {e}"
+                "failed to deliver steer to pane {target_pane_id}: {e}"
             ));
         }
 
@@ -1044,6 +1056,17 @@ async fn run_staleness_checks(
                 Some(meta) => meta,
                 None => continue,
             };
+            let target_pane = tmux::TmuxPane::new(pane::PaneId(meta.target_pane.clone()));
+            let parsed_pane_state = match target_pane.snapshot().await {
+                Ok(state) => state,
+                Err(e) => {
+                    error!(
+                        "failed to snapshot pane {} for request {}: {e}",
+                        meta.target_pane, request_id
+                    );
+                    continue;
+                }
+            };
             let pane_content = match tmux::capture_pane(&meta.target_pane).await {
                 Ok(content) => content,
                 Err(e) => {
@@ -1054,7 +1077,6 @@ async fn run_staleness_checks(
                     continue;
                 }
             };
-            let parsed_pane_state = pane::parse_pane_content(&pane_content);
             {
                 let mut states = idle_states.lock().await;
                 let state = states.entry(session_name.clone()).or_insert(IdleState {
@@ -1112,7 +1134,10 @@ async fn run_staleness_checks(
                 let buddy_reminder = format!(
                     "⚠️ You have an open task (ID: {request_id}) but appear to be idle.\nPlease send an update:\n\ncat <<'EOF' | mate update {request_id}\n<summary of what you did>\nEOF"
                 );
-                match tmux::send_to_pane(&meta.target_pane, &buddy_reminder).await {
+                match tmux::TmuxPane::new(pane::PaneId(meta.target_pane.clone()))
+                    .chat_message(&buddy_reminder)
+                    .await
+                {
                     Ok(()) => {
                         state.idle_nudged = true;
                     }
@@ -1167,7 +1192,10 @@ async fn run_staleness_checks(
             let message = format!(
                 "⏰ Hey captain — your mate seems stuck on task {request_id}{title_suffix}. Both panes have been unchanged for 2 minutes.\n\nMate pane content:\n```\n{pane_content}\n```"
             );
-            if let Err(e) = tmux::send_to_pane(&meta.source_pane, &message).await {
+            if let Err(e) = tmux::TmuxPane::new(pane::PaneId(meta.source_pane.clone()))
+                .chat_message(&message)
+                .await
+            {
                 error!(
                     "failed to deliver staleness notification for request {} to pane {}: {e}",
                     request_id, meta.source_pane
@@ -1344,7 +1372,10 @@ async fn process_response_files(
                     );
                     continue;
                 }
-            } else if let Err(e) = tmux::send_to_pane(&source_pane, &message).await {
+            } else if let Err(e) = tmux::TmuxPane::new(pane::PaneId(source_pane.clone()))
+                .chat_message(&message)
+                .await
+            {
                 error!(
                     "failed to deliver response to pane {} for request {}: {e}",
                     source_pane, request_id

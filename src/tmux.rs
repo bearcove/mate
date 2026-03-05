@@ -65,6 +65,17 @@ impl pane::Pane for TmuxPane {
 
 pub struct TmuxPaneDiscovery;
 
+impl TmuxPaneDiscovery {
+    pub async fn find_peer_with_id(
+        &self,
+        me: &crate::pane::PaneId,
+    ) -> Result<(crate::pane::PaneId, std::sync::Arc<dyn pane::Pane>)> {
+        let pane = find_other_pane(&me.0).await?;
+        let pane_id = crate::pane::PaneId(pane.id);
+        Ok((pane_id.clone(), std::sync::Arc::new(TmuxPane::new(pane_id))))
+    }
+}
+
 #[async_trait::async_trait]
 impl pane::PaneDiscovery for TmuxPaneDiscovery {
     async fn find_peer(&self, me: &crate::pane::PaneId) -> Result<std::sync::Arc<dyn pane::Pane>> {
