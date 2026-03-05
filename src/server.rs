@@ -871,15 +871,6 @@ async fn run_staleness_checks(
                 match tmux::send_to_pane(&meta.target_pane, &buddy_reminder) {
                     Ok(()) => {
                         state.idle_nudged = true;
-                        let captain_notice = format!(
-                            "Mate appears idle on task {request_id} without responding. Sent a reminder."
-                        );
-                        if let Err(e) = tmux::send_to_pane(&meta.source_pane, &captain_notice) {
-                            error!(
-                                "failed to notify captain pane {} after idle nudge for request {}: {e}",
-                                meta.source_pane, request_id
-                            );
-                        }
                     }
                     Err(e) => {
                         error!(
