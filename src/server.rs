@@ -69,6 +69,94 @@ fn orphaned_dir() -> PathBuf {
     PathBuf::from("/tmp/mate-orphaned")
 }
 
+async fn restore_requests_from_disk(
+    request_root_dir: &Path,
+    response_root_dir: &Path,
+    requests: &Arc<Mutex<HashMap<String, Request>>>,
+) {
+    let session_entries = match std::fs::read_dir(request_root_dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            warn!(
+                "failed to scan request root {} on startup: {e}",
+                request_root_dir.display()
+            );
+            return;
+        }
+    };
+
+    let mut restored: Vec<(String, Request)> = Vec::new();
+    let mut skipped_with_response = 0usize;
+    let mut skipped_invalid = 0usize;
+
+    for session_entry in session_entries.flatten() {
+        if !session_entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+            continue;
+        }
+
+        let session_name = match session_entry.file_name().to_str() {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+        let session_path = session_entry.path();
+        let request_entries = match std::fs::read_dir(&session_path) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        for request_entry in request_entries.flatten() {
+            if !request_entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                continue;
+            }
+
+            let request_id = match request_entry.file_name().to_str() {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+            let response_path = response_root_dir
+                .join(&session_name)
+                .join(format!("{request_id}.md"));
+            if response_path.exists() {
+                skipped_with_response += 1;
+                continue;
+            }
+
+            let request_path = request_entry.path();
+            let meta = match crate::util::read_request_meta(&request_path) {
+                Some(meta) => meta,
+                None => {
+                    skipped_invalid += 1;
+                    continue;
+                }
+            };
+
+            let key = request_key(&session_name, &request_id);
+            restored.push((
+                key,
+                Request {
+                    session_name: session_name.clone(),
+                    source_pane: meta.source_pane,
+                    target_pane: meta.target_pane,
+                    title: meta.title,
+                },
+            ));
+        }
+    }
+
+    let restored_count = restored.len();
+    {
+        let mut reqs = requests.lock().await;
+        for (key, request) in restored {
+            reqs.insert(key, request);
+        }
+    }
+
+    info!(
+        "startup request restore: restored={}, skipped_with_response={}, skipped_invalid={}",
+        restored_count, skipped_with_response, skipped_invalid
+    );
+}
+
 fn session_has_request_dirs(request_root_dir: &Path, session_name: &str) -> bool {
     let session_path = request_root_dir.join(session_name);
     let entries = match std::fs::read_dir(&session_path) {
@@ -589,6 +677,8 @@ pub async fn run_server(
     let requests: Arc<Mutex<HashMap<String, Request>>> = Arc::new(Mutex::new(HashMap::new()));
     let idle_states: Arc<Mutex<HashMap<String, IdleState>>> = Arc::new(Mutex::new(HashMap::new()));
     let waiters: Arc<Mutex<HashMap<String, Waiter>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    restore_requests_from_disk(&request_root_dir, &response_root_dir, &requests).await;
 
     let watch_requests = requests.clone();
     let watch_idle_states = idle_states.clone();
