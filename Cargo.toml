@@ -33,7 +33,6 @@ reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fs-err = "3"
-comfy-table = "7"
 
 [dev-dependencies]
 vt100 = "0.15"
