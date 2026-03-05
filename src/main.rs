@@ -429,20 +429,40 @@ fn compact_context() -> Result<()> {
 }
 
 async fn ensure_server_running() -> Result<()> {
+    async fn socket_accepts_connections(socket: &std::path::Path) -> bool {
+        tokio::net::UnixStream::connect(socket).await.is_ok()
+    }
+
+    fn pid_is_alive(pid: u32) -> bool {
+        use sysinfo::{Pid, ProcessesToUpdate, System};
+
+        let mut system = System::new();
+        let pid = Pid::from_u32(pid);
+        system.refresh_processes(ProcessesToUpdate::Some(&[pid]), false);
+        system.process(pid).is_some()
+    }
+
+    let socket = socket_path();
+    if socket_accepts_connections(&socket).await {
+        return Ok(());
+    }
+
     let pid_file = pid_path();
     if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
         && let Ok(pid) = pid_str.trim().parse::<u32>()
     {
-        let status = std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .status();
-        if status.is_ok_and(|s| s.success()) {
-            return Ok(());
+        if pid_is_alive(pid) {
+            // Server may be in the middle of startup; wait briefly for the socket to accept.
+            for _ in 0..10 {
+                if socket_accepts_connections(&socket).await {
+                    return Ok(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
         }
     }
 
     // Server not running — clean up stale socket if any
-    let socket = socket_path();
     if socket.exists() {
         let _ = std::fs::remove_file(&socket);
     }
@@ -458,7 +478,7 @@ async fn ensure_server_running() -> Result<()> {
         .spawn()?;
 
     for _ in 0..50 {
-        if socket.exists() {
+        if socket_accepts_connections(&socket).await {
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
