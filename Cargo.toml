@@ -3,6 +3,13 @@ name = "bud"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
 [dependencies]
 roam = { version = "7.0.0", features = ["runtime"] }
 roam-stream = "7.0.0"
