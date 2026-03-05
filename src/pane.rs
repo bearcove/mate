@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use async_trait::async_trait;
 use eyre::Result;
 use std::sync::Arc;
 
@@ -32,7 +31,7 @@ pub struct PaneId(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionName(pub String);
 
-#[async_trait]
+#[allow(async_fn_in_trait)]
 pub trait Pane: Send + Sync {
     async fn slash_command(&self, command: &str) -> Result<()>;
     async fn chat_message(&self, message: &str) -> Result<()>;
@@ -45,15 +44,16 @@ pub struct PaneInfo {
     pub session: SessionName,
 }
 
-pub struct DiscoveredPane {
+pub struct DiscoveredPane<T: Pane> {
     pub info: PaneInfo,
-    pub pane: Arc<dyn Pane>,
+    pub pane: Arc<T>,
 }
 
-#[async_trait]
+#[allow(async_fn_in_trait)]
 pub trait PaneDiscovery: Send + Sync {
-    async fn find_peer(&self, me: &PaneId) -> Result<Arc<dyn Pane>>;
-    async fn list_all(&self) -> Result<Vec<DiscoveredPane>>;
+    type PaneType: Pane + Send + Sync;
+    async fn find_peer(&self, me: &PaneId) -> Result<Arc<Self::PaneType>>;
+    async fn list_all(&self) -> Result<Vec<DiscoveredPane<Self::PaneType>>>;
 }
 
 impl Default for PaneState {

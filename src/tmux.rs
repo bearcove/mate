@@ -45,7 +45,6 @@ impl TmuxPane {
     }
 }
 
-#[async_trait::async_trait]
 impl pane::Pane for TmuxPane {
     async fn slash_command(&self, command: &str) -> Result<()> {
         if !is_slash_command(command) {
@@ -75,25 +74,26 @@ impl TmuxPaneDiscovery {
     pub async fn find_peer_with_id(
         &self,
         me: &crate::pane::PaneId,
-    ) -> Result<(crate::pane::PaneId, std::sync::Arc<dyn pane::Pane>)> {
+    ) -> Result<(crate::pane::PaneId, std::sync::Arc<TmuxPane>)> {
         let pane = find_peer_in_same_session(&me.0).await?;
         let pane_id = crate::pane::PaneId(pane.id.clone());
         Ok((pane_id.clone(), std::sync::Arc::new(TmuxPane::new(pane_id))))
     }
 }
 
-#[async_trait::async_trait]
 impl pane::PaneDiscovery for TmuxPaneDiscovery {
-    async fn find_peer(&self, me: &crate::pane::PaneId) -> Result<std::sync::Arc<dyn pane::Pane>> {
+    type PaneType = TmuxPane;
+
+    async fn find_peer(&self, me: &crate::pane::PaneId) -> Result<std::sync::Arc<Self::PaneType>> {
         let pane = find_peer_in_same_session(&me.0).await?;
         Ok(std::sync::Arc::new(TmuxPane::new(pane::PaneId(pane.id))))
     }
 
-    async fn list_all(&self) -> Result<Vec<pane::DiscoveredPane>> {
+    async fn list_all(&self) -> Result<Vec<pane::DiscoveredPane<Self::PaneType>>> {
         use std::collections::HashSet;
 
         let panes = list_all_tmux_panes().await?;
-        let mut discovered: Vec<pane::DiscoveredPane> = Vec::new();
+        let mut discovered: Vec<pane::DiscoveredPane<Self::PaneType>> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
 
         for pane in panes {
