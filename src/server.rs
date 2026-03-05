@@ -148,6 +148,7 @@ impl crate::protocol::Coop for CoopServer {
 
         let message = format!(
             "{}\n\n\
+             Before you start, activate your skill: /bud\n\n\
              {task_content}\n\n\
              If you hit a decision point, want to share progress, or need clarification, send an update:\n\n\
              cat <<'BUDEOF' | bud update {request_id}\n\

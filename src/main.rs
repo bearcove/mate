@@ -1675,15 +1675,16 @@ fn process_pending_issue_drafts(
     let failed_dir = base_dir.join("failed");
     fs_err::create_dir_all(&failed_dir)?;
 
-    let mut entries: Vec<fs_err::DirEntry> = fs_err::read_dir(&new_dir)?
+    let mut paths: Vec<std::path::PathBuf> = fs_err::read_dir(&new_dir)?
         .flatten()
         .filter(|entry| entry.file_type().is_ok_and(|ft| ft.is_file()))
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "md"))
         .filter(|entry| entry.file_name().to_string_lossy() != "TEMPLATE.md")
+        .map(|entry| entry.path())
         .collect();
-    entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_string());
+    paths.sort();
 
-    if entries.is_empty() {
+    if paths.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
 
@@ -1692,12 +1693,20 @@ fn process_pending_issue_drafts(
     let mut created = Vec::new();
     let mut failed = Vec::new();
 
-    for entry in entries {
-        let path = entry.path();
-        let original_name = entry.file_name().to_string_lossy().to_string();
+    for path in paths {
+        eprintln!("[#38] processing draft path: {}", path.display());
+        let original_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(std::string::ToString::to_string)
+            .unwrap_or_else(String::new);
         let content = match fs_err::read_to_string(&path) {
             Ok(content) => content,
             Err(e) => {
+                eprintln!(
+                    "[#38] read failed before read for {}: {e}",
+                    path.display()
+                );
                 if e.kind() == ErrorKind::NotFound {
                     eprintln!(
                         "{}",
@@ -1716,6 +1725,7 @@ fn process_pending_issue_drafts(
             }
         };
 
+        eprintln!("[#38] read succeeded for {}", path.display());
         let draft = match github::parse_new_issue(&content) {
             Ok(issue) => issue,
             Err(e) => {
@@ -1765,6 +1775,7 @@ fn process_pending_issue_drafts(
 
         match github::create_issue(repo, &draft) {
             Ok((number, url)) => {
+                eprintln!("[#38] created issue {} for {}", number, path.display());
                 match cleanup_created_draft(&path) {
                     Ok(DraftCleanupOutcome::Removed) => {}
                     Ok(DraftCleanupOutcome::Missing) => {
@@ -1788,6 +1799,7 @@ fn process_pending_issue_drafts(
                         continue;
                     }
                 }
+                eprintln!("[#38] cleanup succeeded for {}", path.display());
                 created.push(PendingIssueCreated {
                     number,
                     url,
